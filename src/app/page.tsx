@@ -60,7 +60,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[var(--bg-base)] flex flex-col">
       {/* Fixed Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 glass-effect border-b border-[var(--shadow-dark)]/10">
+      <header className="sticky top-0 left-0 right-0 z-[100] glass-effect border-b border-[var(--shadow-dark)]/10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
@@ -75,7 +75,7 @@ export default function Home() {
                 'shadow-[4px_4px_8px_var(--shadow-dark),-4px_-4px_8px_var(--shadow-light)]',
                 'flex items-center justify-center'
               )}>
-                <Newspaper className="w-5 h-5 text-[var(--accent-primary)]" />
+                <BookOpen className="w-5 h-5 text-[var(--accent-primary)]" />
               </div>
               <h1 className="text-lg font-bold font-[var(--font-heading)] text-[var(--text-primary)]">
                 The Chronicle Vault
@@ -114,8 +114,7 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Spacer for fixed header */}
-      <div className="h-16" />
+
 
       {/* Main Content */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-8 sm:py-12">
@@ -127,29 +126,15 @@ export default function Home() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="text-center mb-12"
+              className="text-center mb-8"
             >
-              <motion.div
-                initial={{ scale: 0.8 }}
-                animate={{ scale: 1 }}
-                transition={{ delay: 0.2, type: 'spring' }}
-                className={cn(
-                  'w-20 h-20 mx-auto mb-6 rounded-3xl',
-                  'bg-[var(--bg-elevated)]',
-                  'shadow-[12px_12px_24px_var(--shadow-dark),-12px_-12px_24px_var(--shadow-light)]',
-                  'flex items-center justify-center'
-                )}
-              >
-                <BookOpen className="w-10 h-10 text-[var(--accent-primary)]" />
-              </motion.div>
-              
               <h2 className="text-3xl sm:text-4xl font-bold font-[var(--font-heading)] text-[var(--text-primary)] mb-3">
-                The Chronicle Vault
+                Access Indian Newspapers
               </h2>
               <p className="text-lg text-[var(--text-secondary)] max-w-lg mx-auto mb-2">
-                Access Indian newspapers from across 14 languages
+                From across 14 languages
               </p>
-              <p className="text-sm text-[var(--text-muted)] italic mb-8">
+              <p className="text-sm text-[var(--text-muted)] italic mb-6">
                 &ldquo;Where yesterday&apos;s news becomes tomorrow&apos;s history&rdquo;
               </p>
 

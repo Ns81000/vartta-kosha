@@ -234,16 +234,19 @@ export function useNewspaper() {
 
       const progress = data.progress as ProgressState;
       
+      // Always update progress state for real-time feedback
       setState(prev => ({
         ...prev,
-        progress,
+        progress: {
+          ...progress,
+          // Preserve logs array and merge new ones
+          logs: progress.logs || prev.progress?.logs || [],
+        },
       }));
 
-      if (progress.status === 'complete') {
-        stopPolling();
-        // Progress complete means PDF is ready on server
-        // We need to fetch the final result
-      } else if (progress.status === 'error') {
+      // Only stop polling and set error if status is error
+      // Don't stop on 'complete' - let the POST response handler do that
+      if (progress.status === 'error') {
         stopPolling();
         setState(prev => ({
           ...prev,
@@ -280,10 +283,10 @@ export function useNewspaper() {
       downloadReady: false,
     }));
 
-    // Start polling immediately
+    // Start polling immediately with faster interval for real-time updates
     pollIntervalRef.current = setInterval(() => {
       pollProgress(requestId);
-    }, 500);
+    }, 300);
 
     try {
       const dateStr = format(state.date, 'yyyyMMdd');

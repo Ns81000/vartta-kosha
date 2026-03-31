@@ -40,7 +40,7 @@ const stageConfig = {
   error: { icon: AlertCircle, label: 'Error', color: 'text-[var(--state-error)]' },
 };
 
-const stages = ['validating', 'fetching', 'downloading', 'merging', 'complete'] as const;
+const stages = ['validating', 'fetching', 'downloading', 'decrypting', 'merging', 'complete'] as const;
 
 export function DownloadProgress({
   progress,
@@ -153,8 +153,7 @@ export function DownloadProgress({
 
   // Progress state (downloading)
   if (progress && progress.status === 'running') {
-    const currentStage = progress.stage === 'decrypting' ? 'downloading' : progress.stage;
-    const currentStageIndex = stages.indexOf(currentStage as typeof stages[number]);
+    const currentStageIndex = stages.indexOf(progress.stage as typeof stages[number]);
     const config = stageConfig[progress.stage] || stageConfig.downloading;
     const StageIcon = config.icon;
 

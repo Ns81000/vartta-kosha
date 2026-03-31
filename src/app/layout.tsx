@@ -22,9 +22,8 @@ export const metadata: Metadata = {
   keywords: ["Indian newspapers", "newspaper archive", "PDF newspapers", "Hindi newspapers", "Bengali newspapers", "Tamil newspapers", "regional newspapers", "Chronicle Vault"],
   authors: [{ name: "The Chronicle Vault" }],
   icons: {
-    icon: [
-      { url: '/favicon.svg', type: 'image/svg+xml' },
-    ],
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
     apple: '/favicon.svg',
   },
   openGraph: {
