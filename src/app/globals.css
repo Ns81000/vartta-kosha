@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ═══════════════════════════════════════════════════════════════════════════════
-   VĀRTTĀ KŌŚA (वार्त्ता कोश) - The Chronicle Vault
+   THE CHRONICLE VAULT - Indian Newspaper Archive
    Full Light Neumorphic Design System
    ═══════════════════════════════════════════════════════════════════════════════ */
 
@@ -458,5 +458,6 @@ h1, h2, h3, h4, h5, h6 {
 
 .glass-effect {
   backdrop-filter: blur(10px);
-  background: rgba(232, 232, 232, 0.8);
+  background: rgba(232, 232, 232, 0.9);
+  will-change: transform;
 }

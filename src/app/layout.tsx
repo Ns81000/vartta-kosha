@@ -17,20 +17,26 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Vārttā Kōśa | वार्त्ता कोश - The Chronicle Vault",
+  title: "The Chronicle Vault - Indian Newspaper Archive",
   description: "A stunning archive of Indian newspapers. Access daily editions in PDF format from multiple languages and publications. Where yesterday's news becomes tomorrow's history.",
-  keywords: ["Indian newspapers", "newspaper archive", "PDF newspapers", "Hindi newspapers", "Bengali newspapers", "Tamil newspapers", "regional newspapers"],
-  authors: [{ name: "Vārttā Kōśa" }],
+  keywords: ["Indian newspapers", "newspaper archive", "PDF newspapers", "Hindi newspapers", "Bengali newspapers", "Tamil newspapers", "regional newspapers", "Chronicle Vault"],
+  authors: [{ name: "The Chronicle Vault" }],
+  icons: {
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+    ],
+    apple: '/favicon.svg',
+  },
   openGraph: {
-    title: "Vārttā Kōśa | वार्त्ता कोश",
-    description: "The Chronicle Vault - Indian Newspaper Archive",
+    title: "The Chronicle Vault",
+    description: "Indian Newspaper Archive - Access newspapers from 14 languages",
     type: "website",
     locale: "en_IN",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Vārttā Kōśa | वार्त्ता कोश",
-    description: "The Chronicle Vault - Indian Newspaper Archive",
+    title: "The Chronicle Vault",
+    description: "Indian Newspaper Archive - Access newspapers from 14 languages",
   },
   robots: {
     index: true,

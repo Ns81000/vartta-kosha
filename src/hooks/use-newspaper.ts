@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { format } from 'date-fns';
 import type { 
   Language, 
@@ -17,14 +17,15 @@ interface UseNewspaperState {
   languages: Language[];
   newspapers: Newspaper[];
   editions: Edition[];
-  pdfUrl: string | null;
+  downloadUrl: string | null;
+  downloadReady: boolean;
   error: string | null;
   progress: ProgressState | null;
   loading: {
     languages: boolean;
     newspapers: boolean;
     editions: boolean;
-    pdf: boolean;
+    download: boolean;
   };
 }
 
@@ -37,18 +38,40 @@ export function useNewspaper() {
     languages: [],
     newspapers: [],
     editions: [],
-    pdfUrl: null,
+    downloadUrl: null,
+    downloadReady: false,
     error: null,
     progress: null,
     loading: {
       languages: false,
       newspapers: false,
       editions: false,
-      pdf: false,
+      download: false,
     },
   });
 
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const currentRequestIdRef = useRef<string | null>(null);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    currentRequestIdRef.current = null;
+  }, []);
+
   const setDate = useCallback(async (date: Date | null) => {
+    stopPolling();
     setState(prev => ({
       ...prev,
       date,
@@ -58,8 +81,10 @@ export function useNewspaper() {
       languages: [],
       newspapers: [],
       editions: [],
-      pdfUrl: null,
+      downloadUrl: null,
+      downloadReady: false,
       error: null,
+      progress: null,
       loading: { ...prev.loading, languages: !!date },
     }));
 
@@ -90,9 +115,10 @@ export function useNewspaper() {
         loading: { ...prev.loading, languages: false },
       }));
     }
-  }, []);
+  }, [stopPolling]);
 
   const setLanguage = useCallback(async (languageId: string | null) => {
+    stopPolling();
     setState(prev => ({
       ...prev,
       language: languageId,
@@ -100,8 +126,10 @@ export function useNewspaper() {
       edition: null,
       newspapers: [],
       editions: [],
-      pdfUrl: null,
+      downloadUrl: null,
+      downloadReady: false,
       error: null,
+      progress: null,
       loading: { ...prev.loading, newspapers: !!languageId },
     }));
 
@@ -134,16 +162,19 @@ export function useNewspaper() {
         loading: { ...prev.loading, newspapers: false },
       }));
     }
-  }, [state.date]);
+  }, [state.date, stopPolling]);
 
   const setNewspaper = useCallback(async (newspaperId: string | null) => {
+    stopPolling();
     setState(prev => ({
       ...prev,
       newspaper: newspaperId,
       edition: null,
       editions: [],
-      pdfUrl: null,
+      downloadUrl: null,
+      downloadReady: false,
       error: null,
+      progress: null,
       loading: { ...prev.loading, editions: !!newspaperId },
     }));
 
@@ -176,37 +207,86 @@ export function useNewspaper() {
         loading: { ...prev.loading, editions: false },
       }));
     }
-  }, [state.date, state.language]);
+  }, [state.date, state.language, stopPolling]);
 
   const setEdition = useCallback((editionId: string | null) => {
+    stopPolling();
     setState(prev => ({
       ...prev,
       edition: editionId,
-      pdfUrl: null,
+      downloadUrl: null,
+      downloadReady: false,
       error: null,
+      progress: null,
     }));
-  }, []);
+  }, [stopPolling]);
 
-  const fetchPdf = useCallback(async () => {
+  const pollProgress = useCallback(async (requestId: string) => {
+    if (currentRequestIdRef.current !== requestId) return;
+
+    try {
+      const response = await fetch(`/api/pdf?jobId=${requestId}`);
+      const data = await response.json();
+
+      if (!data.success || currentRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      const progress = data.progress as ProgressState;
+      
+      setState(prev => ({
+        ...prev,
+        progress,
+      }));
+
+      if (progress.status === 'complete') {
+        stopPolling();
+        // Progress complete means PDF is ready on server
+        // We need to fetch the final result
+      } else if (progress.status === 'error') {
+        stopPolling();
+        setState(prev => ({
+          ...prev,
+          error: progress.message || 'Download failed',
+          loading: { ...prev.loading, download: false },
+        }));
+      }
+    } catch {
+      // Polling error - continue trying
+    }
+  }, [stopPolling]);
+
+  const startDownload = useCallback(async () => {
     if (!state.date || !state.language || !state.newspaper || !state.edition) {
       return;
     }
 
+    stopPolling();
+    
+    const requestId = crypto.randomUUID();
+    currentRequestIdRef.current = requestId;
+
     setState(prev => ({
       ...prev,
-      loading: { ...prev.loading, pdf: true },
-      progress: { stage: 'fetching', message: 'Fetching newspaper data...' },
+      loading: { ...prev.loading, download: true },
+      progress: {
+        status: 'running',
+        stage: 'validating',
+        message: 'Initializing download...',
+        logs: ['Starting download request'],
+      },
       error: null,
-      pdfUrl: null,
+      downloadUrl: null,
+      downloadReady: false,
     }));
+
+    // Start polling immediately
+    pollIntervalRef.current = setInterval(() => {
+      pollProgress(requestId);
+    }, 500);
 
     try {
       const dateStr = format(state.date, 'yyyyMMdd');
-      
-      setState(prev => ({
-        ...prev,
-        progress: { stage: 'downloading', message: 'Downloading pages...' },
-      }));
 
       const response = await fetch('/api/pdf', {
         method: 'POST',
@@ -216,37 +296,81 @@ export function useNewspaper() {
           language: state.language,
           newspaper: state.newspaper,
           edition: state.edition,
+          requestId,
         }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
+      // Stop polling since we have the result
+      stopPolling();
+
+      if (data.success && data.pdfUrl) {
         setState(prev => ({
           ...prev,
-          pdfUrl: data.pdfUrl,
-          progress: { stage: 'complete', message: 'PDF ready!' },
-          loading: { ...prev.loading, pdf: false },
+          downloadUrl: data.pdfUrl,
+          downloadReady: true,
+          progress: {
+            status: 'complete',
+            stage: 'complete',
+            message: `Download ready (${data.pagesAdded || 0} pages)`,
+            logs: prev.progress?.logs || [],
+            current: data.pagesAdded || 0,
+            total: data.pagesAdded || 0,
+          },
+          loading: { ...prev.loading, download: false },
         }));
       } else {
         setState(prev => ({
           ...prev,
           error: data.error || 'Failed to generate PDF',
-          progress: null,
-          loading: { ...prev.loading, pdf: false },
+          progress: {
+            status: 'error',
+            stage: 'error',
+            message: data.error || 'Download failed',
+            logs: prev.progress?.logs || [],
+          },
+          loading: { ...prev.loading, download: false },
         }));
       }
     } catch {
+      stopPolling();
       setState(prev => ({
         ...prev,
         error: 'Network error. Please try again.',
         progress: null,
-        loading: { ...prev.loading, pdf: false },
+        loading: { ...prev.loading, download: false },
       }));
     }
-  }, [state.date, state.language, state.newspaper, state.edition]);
+  }, [state.date, state.language, state.newspaper, state.edition, stopPolling, pollProgress]);
+
+  const triggerDownload = useCallback(() => {
+    if (!state.downloadUrl) return;
+    
+    // Create filename from selections
+    const dateStr = state.date ? format(state.date, 'yyyy-MM-dd') : 'newspaper';
+    const filename = `${state.newspaper || 'newspaper'}_${dateStr}.pdf`;
+    
+    const link = document.createElement('a');
+    link.href = state.downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [state.downloadUrl, state.date, state.newspaper]);
+
+  const cancelDownload = useCallback(() => {
+    stopPolling();
+    setState(prev => ({
+      ...prev,
+      loading: { ...prev.loading, download: false },
+      progress: null,
+      error: null,
+    }));
+  }, [stopPolling]);
 
   const reset = useCallback(() => {
+    stopPolling();
     setState({
       date: null,
       language: null,
@@ -255,17 +379,23 @@ export function useNewspaper() {
       languages: [],
       newspapers: [],
       editions: [],
-      pdfUrl: null,
+      downloadUrl: null,
+      downloadReady: false,
       error: null,
       progress: null,
       loading: {
         languages: false,
         newspapers: false,
         editions: false,
-        pdf: false,
+        download: false,
       },
     });
-  }, []);
+  }, [stopPolling]);
+
+  // Get selected items for display
+  const selectedLanguage = state.languages.find(l => l.id === state.language);
+  const selectedNewspaper = state.newspapers.find(n => n.id === state.newspaper);
+  const selectedEdition = state.editions.find(e => e.id === state.edition);
 
   return {
     ...state,
@@ -273,9 +403,14 @@ export function useNewspaper() {
     setLanguage,
     setNewspaper,
     setEdition,
-    fetchPdf,
+    startDownload,
+    triggerDownload,
+    cancelDownload,
     reset,
-    canFetchPdf: !!(state.date && state.language && state.newspaper && state.edition),
+    canStartDownload: !!(state.date && state.language && state.newspaper && state.edition && !state.loading.download),
     isAnyLoading: Object.values(state.loading).some(Boolean),
+    selectedLanguage,
+    selectedNewspaper,
+    selectedEdition,
   };
 }

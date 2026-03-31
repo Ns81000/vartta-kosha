@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { DayPicker } from 'react-day-picker';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -13,11 +13,13 @@ interface DatePickerProps {
   value: Date | null;
   onChange: (date: Date | null) => void;
   disabled?: boolean;
+  label?: string;
 }
 
-export function DatePicker({ value, onChange, disabled }: DatePickerProps) {
+export function DatePicker({ value, onChange, disabled, label }: DatePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [month, setMonth] = useState<Date>(value || new Date());
+  const containerRef = useRef<HTMLDivElement>(null);
   const today = new Date();
   
   const handleSelect = (date: Date | undefined) => {
@@ -27,11 +29,27 @@ export function DatePicker({ value, onChange, disabled }: DatePickerProps) {
     }
   };
 
+  // Close on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen]);
+
   return (
-    <div className="relative">
-      <label className="block text-sm font-medium text-[var(--text-secondary)] mb-2">
-        Select Date
-      </label>
+    <div ref={containerRef} className="relative">
+      {label && (
+        <label className="block text-sm font-medium text-[var(--text-secondary)] mb-2">
+          {label}
+        </label>
+      )}
       
       <button
         type="button"
@@ -68,64 +86,56 @@ export function DatePicker({ value, onChange, disabled }: DatePickerProps) {
       
       <AnimatePresence>
         {isOpen && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-40"
-              onClick={() => setIsOpen(false)}
+          <motion.div
+            initial={{ opacity: 0, y: -10, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -10, scale: 0.95 }}
+            transition={{ duration: 0.2 }}
+            className={cn(
+              'absolute mt-2 left-0',
+              'bg-[var(--bg-elevated)] rounded-2xl',
+              'shadow-[12px_12px_24px_var(--shadow-dark),-12px_-12px_24px_var(--shadow-light)]',
+              'p-4 calendar-wrapper',
+              'z-[100]',
+              'min-w-[300px]'
+            )}
+          >
+            <DayPicker
+              mode="single"
+              selected={value || undefined}
+              onSelect={handleSelect}
+              month={month}
+              onMonthChange={setMonth}
+              disabled={[
+                { before: EARLIEST_DATE },
+                { after: today }
+              ]}
+              startMonth={EARLIEST_DATE}
+              endMonth={today}
+              showOutsideDays={false}
+              components={{
+                Chevron: ({ orientation }) => (
+                  orientation === 'left' 
+                    ? <ChevronLeft className="h-4 w-4" />
+                    : <ChevronRight className="h-4 w-4" />
+                ),
+              }}
             />
             
-            <motion.div
-              initial={{ opacity: 0, y: -10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.95 }}
-              transition={{ duration: 0.2 }}
-              className={cn(
-                'absolute z-50 mt-2 left-0 right-0',
-                'bg-[var(--bg-elevated)] rounded-2xl',
-                'shadow-[12px_12px_24px_var(--shadow-dark),-12px_-12px_24px_var(--shadow-light)]',
-                'p-4 calendar-wrapper'
-              )}
-            >
-              <DayPicker
-                mode="single"
-                selected={value || undefined}
-                onSelect={handleSelect}
-                month={month}
-                onMonthChange={setMonth}
-                disabled={[
-                  { before: EARLIEST_DATE },
-                  { after: today }
-                ]}
-                startMonth={EARLIEST_DATE}
-                endMonth={today}
-                showOutsideDays={false}
-                components={{
-                  Chevron: ({ orientation }) => (
-                    orientation === 'left' 
-                      ? <ChevronLeft className="h-4 w-4" />
-                      : <ChevronRight className="h-4 w-4" />
-                  ),
-                }}
-              />
-              
-              <div className="mt-4 pt-4 border-t border-[var(--shadow-dark)]/10">
-                <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
-                  <span>Available: Jul 29, 2025 - Today</span>
-                  {value && (
-                    <button
-                      onClick={() => onChange(null)}
-                      className="text-[var(--accent-primary)] hover:underline"
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
+            <div className="mt-4 pt-4 border-t border-[var(--shadow-dark)]/10">
+              <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                <span>Available: Jul 29, 2025 - Today</span>
+                {value && (
+                  <button
+                    onClick={() => onChange(null)}
+                    className="text-[var(--accent-primary)] hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
               </div>
-            </motion.div>
-          </>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// VĀRTTĀ KŌŚA - TradingRef API Client
+// THE CHRONICLE VAULT - TradingRef API Client
 // Handles live data fetching and decryption
 // ═══════════════════════════════════════════════════════════════════════════════
 

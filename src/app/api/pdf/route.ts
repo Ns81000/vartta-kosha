@@ -19,6 +19,7 @@ interface PdfRequest {
   language: string;
   newspaper: string;
   edition: string;
+  requestId?: string;
 }
 
 type SniffedFileType =
@@ -45,6 +46,63 @@ interface GeneratedPdfResult {
 
 interface LockedPdfMergeResult extends GeneratedPdfResult {
   failures: string[];
+}
+
+interface ProgressSnapshot {
+  status: 'running' | 'complete' | 'error';
+  stage: 'validating' | 'fetching' | 'downloading' | 'decrypting' | 'merging' | 'complete' | 'error';
+  message: string;
+  current?: number;
+  total?: number;
+  logs: string[];
+  startedAt: string;
+  updatedAt: string;
+}
+
+const PROGRESS_TTL_MS = 15 * 60 * 1000;
+const progressJobs = new Map<string, ProgressSnapshot>();
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function createProgressJob(jobId: string, message: string): void {
+  const now = nowIso();
+  progressJobs.set(jobId, {
+    status: 'running',
+    stage: 'validating',
+    message,
+    logs: [message],
+    startedAt: now,
+    updatedAt: now,
+  });
+}
+
+function updateProgressJob(
+  jobId: string,
+  patch: Partial<Pick<ProgressSnapshot, 'status' | 'stage' | 'message' | 'current' | 'total'>>,
+  appendLog?: string
+): void {
+  const existing = progressJobs.get(jobId);
+  if (!existing) return;
+
+  const logs = appendLog ? [...existing.logs, appendLog].slice(-60) : existing.logs;
+  progressJobs.set(jobId, {
+    ...existing,
+    ...patch,
+    logs,
+    updatedAt: nowIso(),
+  });
+}
+
+function pruneProgressJobs(): void {
+  const now = Date.now();
+  for (const [jobId, job] of progressJobs.entries()) {
+    const age = now - new Date(job.updatedAt).getTime();
+    if (age > PROGRESS_TTL_MS) {
+      progressJobs.delete(jobId);
+    }
+  }
 }
 
 function startsWithBytes(data: Uint8Array, signature: number[]): boolean {
@@ -184,40 +242,62 @@ async function addPdfToPdf(target: PDFDocument, data: Uint8Array): Promise<numbe
   }
 }
 
-async function generatePdfFromUrls(urls: string[]): Promise<GeneratedPdfResult> {
+async function generatePdfFromUrls(
+  urls: string[],
+  onProgress?: (current: number, total: number, message: string) => void
+): Promise<GeneratedPdfResult> {
   const mergedPdf = await PDFDocument.create();
   let pagesAdded = 0;
 
-  for (const url of urls) {
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    onProgress?.(i, urls.length, `Downloading source ${i + 1} of ${urls.length}`);
+
     const asset = await downloadAsset(url);
-    if (!asset) continue;
+    if (!asset) {
+      onProgress?.(i + 1, urls.length, `Source ${i + 1} unavailable, moving to next`);
+      continue;
+    }
 
     if (asset.fileType === 'pdf') {
       const pdfPages = await addPdfToPdf(mergedPdf, asset.data);
       if (pdfPages > 0) {
         pagesAdded += pdfPages;
+        onProgress?.(i + 1, urls.length, `Merged PDF source ${i + 1} (${pdfPages} pages)`);
         continue;
       }
 
       const proxyAsset = await downloadProxyImage(url);
       if (proxyAsset) {
         const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
-        if (ok) pagesAdded += 1;
+        if (ok) {
+          pagesAdded += 1;
+          onProgress?.(i + 1, urls.length, `Recovered source ${i + 1} via image fallback`);
+        }
       }
       continue;
     }
 
     if (asset.fileType === 'jpg' || asset.fileType === 'png') {
       const ok = await addImageToPdf(mergedPdf, asset.data);
-      if (ok) pagesAdded += 1;
+      if (ok) {
+        pagesAdded += 1;
+        onProgress?.(i + 1, urls.length, `Embedded image source ${i + 1}`);
+      }
       continue;
     }
 
     const proxyAsset = await downloadProxyImage(url);
-    if (!proxyAsset) continue;
+    if (!proxyAsset) {
+      onProgress?.(i + 1, urls.length, `Unsupported source ${i + 1}, skipped`);
+      continue;
+    }
 
     const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
-    if (ok) pagesAdded += 1;
+    if (ok) {
+      pagesAdded += 1;
+      onProgress?.(i + 1, urls.length, `Converted source ${i + 1} through proxy`);
+    }
   }
 
   if (!pagesAdded) {
@@ -332,25 +412,76 @@ async function mergeLockedPdfsWithPython(urls: string[]): Promise<LockedPdfMerge
   });
 }
 
+export async function GET(request: NextRequest) {
+  pruneProgressJobs();
+  const jobId = request.nextUrl.searchParams.get('jobId');
+
+  if (!jobId) {
+    return NextResponse.json(
+      { success: false, error: 'jobId query parameter is required' },
+      { status: 400 }
+    );
+  }
+
+  const progress = progressJobs.get(jobId);
+  if (!progress) {
+    return NextResponse.json(
+      { success: false, error: 'Progress session not found or expired' },
+      { status: 404 }
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    requestId: jobId,
+    progress,
+  });
+}
+
 export async function POST(request: NextRequest) {
+  pruneProgressJobs();
+
+  let requestId = '';
+
   try {
     const body: PdfRequest = await request.json();
+    requestId = (typeof body.requestId === 'string' && body.requestId.trim())
+      ? body.requestId.trim()
+      : crypto.randomUUID();
+    createProgressJob(requestId, 'Validating download request');
+
     const { date, language, newspaper, edition } = body;
     
     // Validate inputs
     if (!date || !language || !newspaper || !edition) {
+      updateProgressJob(
+        requestId,
+        { status: 'error', stage: 'error', message: 'Request validation failed' },
+        'Missing required parameters'
+      );
       return NextResponse.json(
-        { success: false, error: 'Missing required parameters' },
+        { success: false, error: 'Missing required parameters', requestId },
         { status: 400 }
       );
     }
     
     if (!validateDateString(date)) {
+      updateProgressJob(
+        requestId,
+        { status: 'error', stage: 'error', message: 'Date validation failed' },
+        `Invalid date supplied: ${date}`
+      );
       return NextResponse.json(
-        { success: false, error: 'Invalid date format' },
+        { success: false, error: 'Invalid date format', requestId },
         { status: 400 }
       );
     }
+
+    updateProgressJob(
+      requestId,
+      { stage: 'fetching', message: 'Fetching live edition data' },
+      `Loading TradingRef dataset for ${date}`
+    );
     
     // Fetch live data from TradingRef
     const liveData = await fetchLiveData(date);
@@ -378,11 +509,28 @@ export async function POST(request: NextRequest) {
               const urls = entry.pages.map(page => joinUrl(entry.prefix, page));
               const normalizedType = entry.type === 'dfl' ? 'pdfl' : entry.type;
 
+              updateProgressJob(
+                requestId,
+                {
+                  stage: normalizedType === 'pdfl' ? 'decrypting' : 'downloading',
+                  message: `Preparing ${urls.length} source file${urls.length === 1 ? '' : 's'}`,
+                  current: 0,
+                  total: urls.length,
+                },
+                `Edition resolved (${normalizedType || 'unknown'} mode)`
+              );
+
               let pdfData: Uint8Array | null = null;
               let pagesAdded = 0;
               let generationFailures: string[] = [];
 
               if (normalizedType === 'pdfl') {
+                updateProgressJob(
+                  requestId,
+                  { stage: 'decrypting', message: 'Decrypting locked PDF sources' },
+                  'Attempting password-aware merge for locked files'
+                );
+
                 const lockedResult = await mergeLockedPdfsWithPython(urls);
                 pdfData = lockedResult.pdfData;
                 pagesAdded = lockedResult.pagesAdded;
@@ -390,23 +538,52 @@ export async function POST(request: NextRequest) {
 
                 // If Python decryption fails, try image fallback as a last resort.
                 if (!pdfData) {
-                  const fallback = await generatePdfFromUrls(urls);
+                  updateProgressJob(
+                    requestId,
+                    { stage: 'downloading', message: 'Decryption failed, switching to fallback conversion' },
+                    'Primary decryption did not return pages; trying image conversion fallback'
+                  );
+
+                  const fallback = await generatePdfFromUrls(urls, (current, total, message) => {
+                    updateProgressJob(
+                      requestId,
+                      { stage: 'downloading', message, current, total }
+                    );
+                  });
                   pdfData = fallback.pdfData;
                   pagesAdded = fallback.pagesAdded;
                 }
               } else {
-                const generated = await generatePdfFromUrls(urls);
+                const generated = await generatePdfFromUrls(urls, (current, total, message) => {
+                  updateProgressJob(
+                    requestId,
+                    { stage: 'downloading', message, current, total }
+                  );
+                });
                 pdfData = generated.pdfData;
                 pagesAdded = generated.pagesAdded;
               }
               
               if (pdfData) {
+                updateProgressJob(
+                  requestId,
+                  {
+                    status: 'complete',
+                    stage: 'complete',
+                    message: `Download ready (${pagesAdded} page${pagesAdded === 1 ? '' : 's'})`,
+                    current: pagesAdded,
+                    total: pagesAdded,
+                  },
+                  'PDF generation complete'
+                );
+
                 // Return as base64 data URL
                 const base64 = Buffer.from(pdfData).toString('base64');
                 const dataUrl = `data:application/pdf;base64,${base64}`;
                 
                 return NextResponse.json({
                   success: true,
+                  requestId,
                   pdfUrl: dataUrl,
                   pagesAdded,
                   source: 'live',
@@ -414,9 +591,21 @@ export async function POST(request: NextRequest) {
                 });
               }
 
+              updateProgressJob(
+                requestId,
+                {
+                  status: 'error',
+                  stage: 'error',
+                  message: 'No printable pages were returned',
+                  current: 0,
+                },
+                'Generation completed with zero printable pages'
+              );
+
               return NextResponse.json(
                 {
                   success: false,
+                  requestId,
                   error:
                     'No printable pages were returned for this edition. The source may be locked or unavailable right now.',
                   details: generationFailures,
@@ -428,16 +617,34 @@ export async function POST(request: NextRequest) {
         }
       }
     }
+
+    updateProgressJob(
+      requestId,
+      { status: 'error', stage: 'error', message: 'Edition not found in live data' },
+      'No matching language/newspaper/edition was resolved'
+    );
     
     return NextResponse.json(
-      { success: false, error: 'Unable to generate PDF. The newspaper may not be available.' },
+      {
+        success: false,
+        requestId,
+        error: 'Unable to generate PDF. The newspaper may not be available.',
+      },
       { status: 404 }
     );
     
   } catch (error) {
+    if (requestId) {
+      updateProgressJob(
+        requestId,
+        { status: 'error', stage: 'error', message: 'Unexpected server error occurred' },
+        error instanceof Error ? error.message : 'Unknown server error'
+      );
+    }
+
     console.error('PDF API error:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to generate PDF. Please try again.' },
+      { success: false, requestId, error: 'Failed to generate PDF. Please try again.' },
       { status: 500 }
     );
   }

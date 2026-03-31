@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// VĀRTTĀ KŌŚA - TypeScript Types
+// THE CHRONICLE VAULT - TypeScript Types
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface DecryptedEntry {
@@ -99,8 +99,12 @@ export interface AppState {
 }
 
 export interface ProgressState {
-  stage: 'fetching' | 'downloading' | 'generating' | 'complete';
+  status: 'running' | 'complete' | 'error';
+  stage: 'validating' | 'fetching' | 'downloading' | 'decrypting' | 'merging' | 'complete' | 'error';
   message: string;
   current?: number;
   total?: number;
+  logs: string[];
+  startedAt?: string;
+  updatedAt?: string;
 }

@@ -1,9 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// VĀRTTĀ KŌŚA - Application Constants
+// THE CHRONICLE VAULT - Application Constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export const APP_NAME = 'Vārttā Kōśa';
-export const APP_NAME_SANSKRIT = 'वार्त्ता कोश';
+export const APP_NAME = 'The Chronicle Vault';
 export const APP_TAGLINE = 'Where yesterday\'s news becomes tomorrow\'s history';
 
 export const TRADINGREF_API_BASE = 'https://data.tradingref.com';
