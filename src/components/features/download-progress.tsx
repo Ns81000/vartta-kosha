@@ -22,6 +22,7 @@ import type { ProgressState } from '@/types';
 
 interface DownloadProgressProps {
   progress: ProgressState | null;
+  isDownloading: boolean;
   downloadReady: boolean;
   error: string | null;
   onDownload: () => void;
@@ -45,6 +46,7 @@ const stages = ['validating', 'fetching', 'downloading', 'decrypting', 'merging'
 
 export function DownloadProgress({
   progress,
+  isDownloading,
   downloadReady,
   error,
   onDownload,
@@ -55,8 +57,30 @@ export function DownloadProgress({
 }: DownloadProgressProps) {
   const [showLogs, setShowLogs] = useState(false);
 
-  if (!progress && !error && !downloadReady) {
+  if (!progress && !error && !downloadReady && !isDownloading) {
     return null;
+  }
+
+  if (!progress && isDownloading && !error && !downloadReady) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className={cn(
+          'rounded-2xl p-6',
+          'bg-[var(--bg-elevated)]',
+          'shadow-[8px_8px_16px_var(--shadow-dark),-8px_-8px_16px_var(--shadow-light)]'
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <Loader2 className="w-5 h-5 text-[var(--accent-primary)] animate-spin" />
+          <div>
+            <p className="font-medium text-[var(--text-primary)]">Finalizing download...</p>
+            <p className="text-sm text-[var(--text-muted)]">Preparing your PDF. This can take a few seconds on mobile.</p>
+          </div>
+        </div>
+      </motion.div>
+    );
   }
 
   // Error state

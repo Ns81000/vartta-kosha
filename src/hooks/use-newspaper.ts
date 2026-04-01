@@ -65,6 +65,8 @@ export function useNewspaper() {
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const downloadInFlightRef = useRef(false);
+  const downloadUrlRef = useRef<string | null>(null);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -362,6 +364,12 @@ export function useNewspaper() {
       return;
     }
 
+    if (downloadInFlightRef.current) {
+      return;
+    }
+
+    downloadInFlightRef.current = true;
+
     stopPolling();
     
     const requestId = crypto.randomUUID();
@@ -380,6 +388,7 @@ export function useNewspaper() {
       downloadUrl: null,
       downloadReady: false,
     }));
+    downloadUrlRef.current = null;
 
     // Start polling immediately with faster interval for real-time updates
     void pollProgress(requestId);
@@ -404,13 +413,20 @@ export function useNewspaper() {
 
       const data = await response.json();
 
+      if (currentRequestIdRef.current !== requestId) {
+        downloadInFlightRef.current = false;
+        return;
+      }
+
       // Stop polling since we have the result
       stopPolling();
 
       if (response.ok && data.success && data.pdfUrl) {
+        downloadUrlRef.current = data.pdfUrl;
         setState(prev => ({
           ...prev,
-          downloadUrl: data.pdfUrl,
+          // Keep large payload out of React state to avoid mobile UI freezes.
+          downloadUrl: null,
           downloadReady: true,
           progress: {
             status: 'complete',
@@ -439,26 +455,34 @@ export function useNewspaper() {
           loading: { ...prev.loading, download: false },
         }));
       }
+      downloadInFlightRef.current = false;
     } catch {
       stopPolling();
       setState(prev => ({
         ...prev,
         error: 'Network error. Please try again.',
-        progress: null,
+        progress: {
+          status: 'error',
+          stage: 'error',
+          message: 'Network error. Please try again.',
+          logs: prev.progress?.logs || [],
+        },
         loading: { ...prev.loading, download: false },
       }));
+      downloadInFlightRef.current = false;
     }
   }, [state.date, state.language, state.newspaper, state.edition, stopPolling, pollProgress]);
 
   const triggerDownload = useCallback(() => {
-    if (!state.downloadUrl) return;
+    const activeUrl = downloadUrlRef.current || state.downloadUrl;
+    if (!activeUrl) return;
     
     // Create filename from selections
     const dateStr = state.date ? format(state.date, 'yyyy-MM-dd') : 'newspaper';
     const filename = `${state.newspaper || 'newspaper'}_${dateStr}.pdf`;
     
     const link = document.createElement('a');
-    link.href = state.downloadUrl;
+    link.href = activeUrl;
     link.download = filename;
     document.body.appendChild(link);
     link.click();
@@ -467,6 +491,8 @@ export function useNewspaper() {
 
   const cancelDownload = useCallback(() => {
     stopPolling();
+    downloadInFlightRef.current = false;
+    downloadUrlRef.current = null;
     setState(prev => ({
       ...prev,
       loading: { ...prev.loading, download: false },
@@ -479,6 +505,8 @@ export function useNewspaper() {
 
   const reset = useCallback(() => {
     stopPolling();
+    downloadInFlightRef.current = false;
+    downloadUrlRef.current = null;
     setState({
       date: null,
       language: null,

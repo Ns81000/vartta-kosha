@@ -276,6 +276,7 @@ export default function Home() {
             >
               <DownloadProgress
                 progress={progress}
+                isDownloading={loading.download}
                 downloadReady={downloadReady}
                 error={error}
                 onDownload={triggerDownload}

@@ -377,7 +377,7 @@ function buildPasswordMapFromPages(pages: string[]): Record<string, string> {
 async function mergeLockedPdfsWithCloudRun(
   urls: string[],
   passwords: Record<string, string>,
-  onProgress?: (message: string, log: string) => void
+  onProgress?: (message: string, log: string, current?: number, total?: number) => void
 ): Promise<LockedPdfMergeResult> {
   if (!urls.length) {
     return { pdfData: null, pagesAdded: 0, failures: [] };
@@ -410,8 +410,31 @@ async function mergeLockedPdfsWithCloudRun(
     headers.Authorization = `Bearer ${env.LOCKED_PDF_DECRYPT_TOKEN.trim()}`;
   }
 
+  const simulatedTotal = Math.max(urls.length, 6);
+  let simulatedCurrent = 0;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+
   try {
-    onProgress?.(`Connecting to decryption service...`, `🔐 Initiating secure connection`);
+
+    const emitProgress = (message: string, log: string, step?: number) => {
+      if (typeof step === 'number') {
+        simulatedCurrent = Math.max(simulatedCurrent, Math.min(step, simulatedTotal));
+      }
+      onProgress?.(message, log, simulatedCurrent, simulatedTotal);
+    };
+
+    emitProgress(`Connecting to decryption service...`, `🔐 Initiating secure connection`, 1);
+    heartbeat = setInterval(() => {
+      if (simulatedCurrent < simulatedTotal - 1) {
+        simulatedCurrent += 1;
+      }
+      onProgress?.(
+        `Decrypting locked PDF sources (${simulatedCurrent}/${simulatedTotal})...`,
+        `🔓 Decrypting source batch ${simulatedCurrent}/${simulatedTotal}`,
+        simulatedCurrent,
+        simulatedTotal
+      );
+    }, 1500);
     
     const response = await fetchWithRetry(
       serviceUrl,
@@ -428,7 +451,7 @@ async function mergeLockedPdfsWithCloudRun(
       }
     );
 
-    onProgress?.(`Processing decryption response...`, `🔓 Decryption service responded`);
+    emitProgress(`Processing decryption response...`, `🔓 Decryption service responded`, simulatedTotal - 1);
 
     const rawText = await response.text();
     let parsed: {
@@ -463,7 +486,7 @@ async function mergeLockedPdfsWithCloudRun(
       };
     }
 
-    onProgress?.(`Decryption completed successfully`, `✓ Decrypted ${parsed.pagesAdded || 0} pages`);
+    emitProgress(`Decryption completed successfully`, `✓ Decrypted ${parsed.pagesAdded || 0} pages`, simulatedTotal);
 
     return {
       pdfData: new Uint8Array(Buffer.from(parsed.pdfBase64, 'base64')),
@@ -480,6 +503,10 @@ async function mergeLockedPdfsWithCloudRun(
           : 'Cloud Run request failed',
       ],
     };
+  } finally {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+    }
   }
 }
 
@@ -663,10 +690,10 @@ export async function POST(request: NextRequest) {
                   'Calling external decrypt service'
                 );
 
-                const lockedResult = await mergeLockedPdfsWithCloudRun(urls, passwordMap, (message, log) => {
+                const lockedResult = await mergeLockedPdfsWithCloudRun(urls, passwordMap, (message, log, current, total) => {
                   updateProgressJob(
                     requestId,
-                    { stage: 'decrypting', message },
+                    { stage: 'decrypting', message, current, total },
                     log
                   );
                 });
