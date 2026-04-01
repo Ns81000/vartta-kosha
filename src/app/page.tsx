@@ -62,10 +62,10 @@ export default function Home() {
       {/* Fixed Header */}
       <header className="sticky top-0 left-0 right-0 z-[100] glass-effect border-b border-[var(--shadow-dark)]/10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6">
-          <div className="flex items-center justify-between h-16">
+          <div className="relative flex items-center justify-between h-16">
             {/* Logo */}
             <motion.div 
-              className="flex items-center gap-3"
+              className="flex items-center gap-3 lg:absolute lg:left-1/2 lg:-translate-x-1/2"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
             >
@@ -77,7 +77,7 @@ export default function Home() {
               )}>
                 <BookOpen className="w-5 h-5 text-[var(--accent-primary)]" />
               </div>
-              <h1 className="text-lg font-bold font-[var(--font-heading)] text-[var(--text-primary)]">
+              <h1 className="text-base sm:text-lg font-bold font-[var(--font-heading)] text-[var(--text-primary)] whitespace-nowrap">
                 The Chronicle Vault
               </h1>
             </motion.div>
