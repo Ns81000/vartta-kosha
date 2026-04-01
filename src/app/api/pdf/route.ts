@@ -550,7 +550,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return new NextResponse(stored.pdfData, {
+    const pdfBuffer = new ArrayBuffer(stored.pdfData.byteLength);
+    new Uint8Array(pdfBuffer).set(stored.pdfData);
+    const pdfBody = new Blob([pdfBuffer], { type: 'application/pdf' });
+
+    return new NextResponse(pdfBody, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
