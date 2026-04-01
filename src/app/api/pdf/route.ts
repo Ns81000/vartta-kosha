@@ -466,8 +466,19 @@ export async function GET(request: NextRequest) {
   const progress = progressJobs.get(jobId);
   if (!progress) {
     return NextResponse.json(
-      { success: false, error: 'Progress session not found or expired' },
-      { status: 404 }
+      {
+        success: true,
+        requestId: jobId,
+        progress: {
+          status: 'running',
+          stage: 'fetching',
+          message: 'Progress is unavailable on this server instance. Waiting for final response...',
+          logs: [],
+          startedAt: nowIso(),
+          updatedAt: nowIso(),
+        },
+      },
+      { status: 200 }
     );
   }
 
@@ -603,7 +614,7 @@ export async function POST(request: NextRequest) {
                 updateProgressJob(
                   requestId,
                   { stage: 'decrypting', message: 'Decrypting locked PDF sources' },
-                  'Calling external Cloud Run decrypt service'
+                  'Calling external decrypt service'
                 );
 
                 const lockedResult = await mergeLockedPdfsWithCloudRun(urls);

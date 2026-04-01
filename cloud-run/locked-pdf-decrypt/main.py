@@ -2,6 +2,7 @@ import base64
 import io
 import os
 import urllib.request
+from urllib.parse import unquote
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
@@ -29,21 +30,57 @@ def _fetch_bytes(url: str) -> bytes:
         return resp.read()
 
 
-def _password_for(url: str, provided: dict[str, str]) -> str:
-    name = os.path.basename(url.split("?", 1)[0])
-    if not name:
-        return ""
-    return provided.get(name, name[:10])
+def _password_candidates(url: str, provided: dict[str, str]) -> list[str]:
+    name = os.path.basename(unquote(url.split("?", 1)[0]))
+    stem, _ = os.path.splitext(name)
+
+    lowered = {k.lower(): v for k, v in provided.items()}
+    candidates: list[str] = []
+
+    for key in [name, stem, name.lower(), stem.lower()]:
+        if not key:
+            continue
+        direct = provided.get(key)
+        if direct:
+            candidates.append(direct)
+        mapped = lowered.get(key.lower())
+        if mapped:
+            candidates.append(mapped)
+
+    for token in [name, stem]:
+        if token:
+            candidates.append(token[:10])
+            candidates.append(token[:8])
+
+    # Keep order, drop empties/duplicates.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for pwd in candidates:
+        if not pwd or pwd in seen:
+            continue
+        seen.add(pwd)
+        deduped.append(pwd)
+    return deduped
 
 
-def _add_pdf_pages(writer: PdfWriter, data: bytes, password: str) -> int:
+def _add_pdf_pages(writer: PdfWriter, data: bytes, passwords: list[str]) -> int:
     reader = PdfReader(io.BytesIO(data), strict=False)
 
     if reader.is_encrypted:
-        if not password:
+        if not passwords:
             raise ValueError("missing password")
-        decrypt_res = reader.decrypt(password)
-        if decrypt_res == 0:
+
+        unlocked = False
+        for password in passwords:
+            try:
+                decrypt_res = reader.decrypt(password)
+            except Exception:  # noqa: BLE001
+                continue
+            if decrypt_res != 0:
+                unlocked = True
+                break
+
+        if not unlocked:
             raise ValueError("invalid password")
 
     count = 0
@@ -71,6 +108,11 @@ def healthz() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.get("/")
+def root() -> dict[str, bool]:
+    return {"ok": True}
+
+
 @app.post("/merge-locked")
 def merge_locked(
     payload: MergeRequest,
@@ -92,8 +134,8 @@ def merge_locked(
                 failures.append(f"{url}: not a PDF payload")
                 continue
 
-            password = _password_for(url, payload.passwords)
-            pages_added += _add_pdf_pages(writer, data, password)
+            password_candidates = _password_candidates(url, payload.passwords)
+            pages_added += _add_pdf_pages(writer, data, password_candidates)
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{url}: {exc}")
 
