@@ -330,14 +330,15 @@ async function generatePdfFromUrls(
   };
 }
 
-function buildPasswordMap(urls: string[]): Record<string, string> {
+function buildPasswordMapFromPages(pages: string[]): Record<string, string> {
   const map: Record<string, string> = {};
 
-  for (const url of urls) {
+  for (const page of pages) {
     try {
-      const pathname = new URL(url).pathname;
-      const fileName = pathname.split('/').pop() ?? '';
+      const fileName = (page || '').trim().split('/').pop() ?? '';
       if (!fileName) continue;
+      if (!fileName.toLowerCase().endsWith('.pdf')) continue;
+      if (fileName.length < 10) continue;
       map[fileName] = fileName.slice(0, 10);
     } catch {
       continue;
@@ -347,7 +348,10 @@ function buildPasswordMap(urls: string[]): Record<string, string> {
   return map;
 }
 
-async function mergeLockedPdfsWithCloudRun(urls: string[]): Promise<LockedPdfMergeResult> {
+async function mergeLockedPdfsWithCloudRun(
+  urls: string[],
+  passwords: Record<string, string>
+): Promise<LockedPdfMergeResult> {
   if (!urls.length) {
     return { pdfData: null, pagesAdded: 0, failures: [] };
   }
@@ -368,7 +372,7 @@ async function mergeLockedPdfsWithCloudRun(urls: string[]): Promise<LockedPdfMer
 
   const inputPayload = {
     urls,
-    passwords: buildPasswordMap(urls),
+    passwords,
   };
 
   const headers: Record<string, string> = {
@@ -593,6 +597,7 @@ export async function POST(request: NextRequest) {
             
             if (entry.pages.length > 0) {
               const urls = entry.pages.map(page => joinUrl(entry.prefix, page));
+              const passwordMap = buildPasswordMapFromPages(entry.pages);
               const normalizedType = entry.type === 'dfl' ? 'pdfl' : entry.type;
 
               updateProgressJob(
@@ -617,7 +622,7 @@ export async function POST(request: NextRequest) {
                   'Calling external decrypt service'
                 );
 
-                const lockedResult = await mergeLockedPdfsWithCloudRun(urls);
+                const lockedResult = await mergeLockedPdfsWithCloudRun(urls, passwordMap);
                 pdfData = lockedResult.pdfData;
                 pagesAdded = lockedResult.pagesAdded;
                 generationFailures = lockedResult.failures;

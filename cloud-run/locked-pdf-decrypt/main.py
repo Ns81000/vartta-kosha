@@ -5,7 +5,7 @@ import urllib.request
 from urllib.parse import unquote
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel
 from pypdf import PdfReader, PdfWriter
 
@@ -111,6 +111,11 @@ def healthz() -> dict[str, bool]:
 @app.get("/")
 def root() -> dict[str, bool]:
     return {"ok": True}
+
+
+@app.head("/")
+def root_head() -> Response:
+    return Response(status_code=200)
 
 
 @app.post("/merge-locked")
