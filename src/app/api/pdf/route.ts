@@ -62,6 +62,7 @@ interface ProgressSnapshot {
 
 const PROGRESS_TTL_MS = 15 * 60 * 1000;
 const progressJobs = new Map<string, ProgressSnapshot>();
+const PARALLEL_SOURCE_DOWNLOADS = 3;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -104,6 +105,15 @@ function pruneProgressJobs(): void {
       progressJobs.delete(jobId);
     }
   }
+}
+
+function buildClientKey(request: NextRequest): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const realIp = request.headers.get('x-real-ip');
+  const cfConnectingIp = request.headers.get('cf-connecting-ip');
+  const ip = (forwarded?.split(',')[0]?.trim() || realIp || cfConnectingIp || 'unknown').trim();
+  const userAgent = (request.headers.get('user-agent') || 'unknown-ua').slice(0, 80);
+  return `${ip}:${userAgent}`;
 }
 
 function startsWithBytes(data: Uint8Array, signature: number[]): boolean {
@@ -269,54 +279,70 @@ async function generatePdfFromUrls(
   const mergedPdf = await PDFDocument.create();
   let pagesAdded = 0;
 
-  for (let i = 0; i < urls.length; i++) {
-    const url = urls[i];
-    onProgress?.(i, urls.length, `Downloading source ${i + 1} of ${urls.length}`, `Starting download: source ${i + 1}`);
+  for (let chunkStart = 0; chunkStart < urls.length; chunkStart += PARALLEL_SOURCE_DOWNLOADS) {
+    const chunkUrls = urls.slice(chunkStart, chunkStart + PARALLEL_SOURCE_DOWNLOADS);
 
-    const asset = await downloadAsset(url);
-    if (!asset) {
-      onProgress?.(i + 1, urls.length, `Source ${i + 1} unavailable, moving to next`, `⚠️ Source ${i + 1} unavailable`);
-      continue;
-    }
+    chunkUrls.forEach((_, localIndex) => {
+      const sourceIndex = chunkStart + localIndex;
+      onProgress?.(
+        sourceIndex,
+        urls.length,
+        `Downloading source ${sourceIndex + 1} of ${urls.length}`,
+        `Starting download: source ${sourceIndex + 1}`
+      );
+    });
 
-    if (asset.fileType === 'pdf') {
-      const pdfPages = await addPdfToPdf(mergedPdf, asset.data);
-      if (pdfPages > 0) {
-        pagesAdded += pdfPages;
-        onProgress?.(i + 1, urls.length, `Merged PDF source ${i + 1} (${pdfPages} pages)`, `✓ Merged PDF ${i + 1}: ${pdfPages} pages`);
+    const assets = await Promise.all(chunkUrls.map((url) => downloadAsset(url)));
+
+    for (let localIndex = 0; localIndex < chunkUrls.length; localIndex++) {
+      const i = chunkStart + localIndex;
+      const url = chunkUrls[localIndex];
+      const asset = assets[localIndex];
+
+      if (!asset) {
+        onProgress?.(i + 1, urls.length, `Source ${i + 1} unavailable, moving to next`, `⚠️ Source ${i + 1} unavailable`);
+        continue;
+      }
+
+      if (asset.fileType === 'pdf') {
+        const pdfPages = await addPdfToPdf(mergedPdf, asset.data);
+        if (pdfPages > 0) {
+          pagesAdded += pdfPages;
+          onProgress?.(i + 1, urls.length, `Merged PDF source ${i + 1} (${pdfPages} pages)`, `✓ Merged PDF ${i + 1}: ${pdfPages} pages`);
+          continue;
+        }
+
+        const proxyAsset = await downloadProxyImage(url);
+        if (proxyAsset) {
+          const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
+          if (ok) {
+            pagesAdded += 1;
+            onProgress?.(i + 1, urls.length, `Recovered source ${i + 1} via image fallback`, `✓ Recovered ${i + 1} via proxy`);
+          }
+        }
+        continue;
+      }
+
+      if (asset.fileType === 'jpg' || asset.fileType === 'png') {
+        const ok = await addImageToPdf(mergedPdf, asset.data);
+        if (ok) {
+          pagesAdded += 1;
+          onProgress?.(i + 1, urls.length, `Embedded image source ${i + 1}`, `✓ Embedded image ${i + 1}`);
+        }
         continue;
       }
 
       const proxyAsset = await downloadProxyImage(url);
-      if (proxyAsset) {
-        const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
-        if (ok) {
-          pagesAdded += 1;
-          onProgress?.(i + 1, urls.length, `Recovered source ${i + 1} via image fallback`, `✓ Recovered ${i + 1} via proxy`);
-        }
+      if (!proxyAsset) {
+        onProgress?.(i + 1, urls.length, `Unsupported source ${i + 1}, skipped`, `⚠️ Skipped unsupported source ${i + 1}`);
+        continue;
       }
-      continue;
-    }
 
-    if (asset.fileType === 'jpg' || asset.fileType === 'png') {
-      const ok = await addImageToPdf(mergedPdf, asset.data);
+      const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
       if (ok) {
         pagesAdded += 1;
-        onProgress?.(i + 1, urls.length, `Embedded image source ${i + 1}`, `✓ Embedded image ${i + 1}`);
+        onProgress?.(i + 1, urls.length, `Converted source ${i + 1} through proxy`, `✓ Converted ${i + 1} via proxy`);
       }
-      continue;
-    }
-
-    const proxyAsset = await downloadProxyImage(url);
-    if (!proxyAsset) {
-      onProgress?.(i + 1, urls.length, `Unsupported source ${i + 1}, skipped`, `⚠️ Skipped unsupported source ${i + 1}`);
-      continue;
-    }
-
-    const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
-    if (ok) {
-      pagesAdded += 1;
-      onProgress?.(i + 1, urls.length, `Converted source ${i + 1} through proxy`, `✓ Converted ${i + 1} via proxy`);
     }
   }
 
@@ -458,14 +484,18 @@ async function mergeLockedPdfsWithCloudRun(
 }
 
 export async function GET(request: NextRequest) {
-  // Apply rate limiting - relaxed for status checks
-  const rateLimitResult = await rateLimit(request, RateLimitPresets.relaxed);
+  // Polling can be frequent, so key by client + job to avoid cross-user throttling.
+  const jobId = request.nextUrl.searchParams.get('jobId');
+  const rateLimitResult = await rateLimit(request, {
+    ...RateLimitPresets.relaxed,
+    maxRequests: 240,
+    keyGenerator: (req) => `${buildClientKey(req)}:progress:${jobId ?? 'unknown-job'}`,
+  });
   if (!rateLimitResult.success) {
     return rateLimitResult.response;
   }
 
   pruneProgressJobs();
-  const jobId = request.nextUrl.searchParams.get('jobId');
 
   if (!jobId) {
     return NextResponse.json(
@@ -501,8 +531,12 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  // Apply strict rate limiting for PDF generation (resource-intensive)
-  const rateLimitResult = await rateLimit(request, RateLimitPresets.strict);
+  // Resource-heavy route: keep strict, but isolate by client fingerprint to avoid NAT collisions.
+  const rateLimitResult = await rateLimit(request, {
+    ...RateLimitPresets.strict,
+    maxRequests: 20,
+    keyGenerator: (req) => `${buildClientKey(req)}:pdf-generate`,
+  });
   if (!rateLimitResult.success) {
     return rateLimitResult.response;
   }

@@ -29,6 +29,18 @@ interface UseNewspaperState {
   };
 }
 
+const stageOrder: Record<ProgressState['stage'], number> = {
+  validating: 0,
+  fetching: 1,
+  downloading: 2,
+  decrypting: 3,
+  merging: 4,
+  complete: 5,
+  error: 6,
+};
+
+const PROGRESS_UNAVAILABLE_MESSAGE = 'Progress is unavailable on this server instance. Waiting for final response...';
+
 export function useNewspaper() {
   const [state, setState] = useState<UseNewspaperState>({
     date: null,
@@ -257,6 +269,10 @@ export function useNewspaper() {
 
     try {
       const response = await fetch(`/api/pdf?jobId=${requestId}`);
+      if (!response.ok) {
+        return;
+      }
+
       const data = await response.json();
 
       if (!data.success || currentRequestIdRef.current !== requestId) {
@@ -267,15 +283,54 @@ export function useNewspaper() {
       
       // Update progress state for real-time feedback
       setState(prev => {
+        const previousProgress = prev.progress;
+
+        if (
+          progress.message === PROGRESS_UNAVAILABLE_MESSAGE &&
+          previousProgress &&
+          previousProgress.status === 'running'
+        ) {
+          return prev;
+        }
+
+        let mergedProgress: ProgressState = {
+          ...progress,
+          logs: progress.logs || previousProgress?.logs || [],
+        };
+
+        if (previousProgress && previousProgress.status === 'running' && progress.status === 'running') {
+          const previousStageRank = stageOrder[previousProgress.stage];
+          const incomingStageRank = stageOrder[progress.stage];
+
+          // Ignore out-of-order snapshots from another server instance.
+          if (incomingStageRank < previousStageRank) {
+            mergedProgress = {
+              ...previousProgress,
+              logs: progress.logs?.length ? progress.logs : previousProgress.logs,
+              updatedAt: progress.updatedAt ?? previousProgress.updatedAt,
+            };
+          } else {
+            const safeCurrent = Math.max(previousProgress.current ?? 0, progress.current ?? 0);
+            const safeTotal = Math.max(previousProgress.total ?? 0, progress.total ?? 0);
+
+            mergedProgress = {
+              ...progress,
+              current: safeTotal > 0 ? safeCurrent : progress.current,
+              total: safeTotal > 0 ? safeTotal : progress.total,
+              logs: progress.logs?.length ? progress.logs : previousProgress.logs,
+            };
+          }
+        }
+
         // Only update if there's actual changes to prevent unnecessary re-renders
         const hasChanges = 
-          !prev.progress ||
-          prev.progress.status !== progress.status ||
-          prev.progress.stage !== progress.stage ||
-          prev.progress.message !== progress.message ||
-          prev.progress.current !== progress.current ||
-          prev.progress.total !== progress.total ||
-          (progress.logs && progress.logs.length !== prev.progress.logs?.length);
+          !previousProgress ||
+          previousProgress.status !== mergedProgress.status ||
+          previousProgress.stage !== mergedProgress.stage ||
+          previousProgress.message !== mergedProgress.message ||
+          previousProgress.current !== mergedProgress.current ||
+          previousProgress.total !== mergedProgress.total ||
+          (mergedProgress.logs && mergedProgress.logs.length !== previousProgress.logs?.length);
 
         if (!hasChanges) {
           return prev;
@@ -283,11 +338,7 @@ export function useNewspaper() {
 
         return {
           ...prev,
-          progress: {
-            ...progress,
-            // Preserve and merge logs array
-            logs: progress.logs || prev.progress?.logs || [],
-          },
+          progress: mergedProgress,
         };
       });
 
@@ -331,9 +382,10 @@ export function useNewspaper() {
     }));
 
     // Start polling immediately with faster interval for real-time updates
+    void pollProgress(requestId);
     pollIntervalRef.current = setInterval(() => {
-      pollProgress(requestId);
-    }, 500); // Increased to 500ms for better balance between responsiveness and server load
+      void pollProgress(requestId);
+    }, 1000);
 
     try {
       const dateStr = format(state.date, 'yyyyMMdd');
@@ -355,7 +407,7 @@ export function useNewspaper() {
       // Stop polling since we have the result
       stopPolling();
 
-      if (data.success && data.pdfUrl) {
+      if (response.ok && data.success && data.pdfUrl) {
         setState(prev => ({
           ...prev,
           downloadUrl: data.pdfUrl,
@@ -371,13 +423,17 @@ export function useNewspaper() {
           loading: { ...prev.loading, download: false },
         }));
       } else {
+        const retryAfter = typeof data.retryAfter === 'number'
+          ? ` Please retry in ${data.retryAfter} second${data.retryAfter === 1 ? '' : 's'}.`
+          : '';
+
         setState(prev => ({
           ...prev,
-          error: data.error || 'Failed to generate PDF',
+          error: (data.error || data.message || 'Failed to generate PDF') + retryAfter,
           progress: {
             status: 'error',
             stage: 'error',
-            message: data.error || 'Download failed',
+            message: (data.error || data.message || 'Download failed') + retryAfter,
             logs: prev.progress?.logs || [],
           },
           loading: { ...prev.loading, download: false },
