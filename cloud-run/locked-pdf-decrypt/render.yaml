@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: locked-pdf-decrypt
+    runtime: python
+    plan: free
+    buildCommand: 'pip install -r requirements.txt'
+    startCommand: 'uvicorn main:app --host 0.0.0.0 --port $PORT'
+    envVars:
+      - key: DECRYPT_SERVICE_TOKEN
+        scope: run
+        # Set this to a strong random token (32+ chars)
+        # Example: openssl rand -hex 32
+        value: YOUR_SECRET_TOKEN_HERE

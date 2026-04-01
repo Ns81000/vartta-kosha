@@ -7,9 +7,8 @@ import {
 } from '@/lib/api/tradingref';
 import { validateDateString } from '@/lib/utils/sanitize';
 import { IMAGE_PROXY_BASE } from '@/lib/constants';
+import { env } from '@/lib/env';
 import { PDFDocument } from 'pdf-lib';
-import { spawn } from 'node:child_process';
-import path from 'node:path';
 import { rateLimit, RateLimitPresets } from '@/lib/rate-limit';
 import { fetchWithTimeout, fetchWithRetry, externalApiCircuitBreaker } from '@/lib/fetch-utils';
 
@@ -49,8 +48,6 @@ interface GeneratedPdfResult {
 interface LockedPdfMergeResult extends GeneratedPdfResult {
   failures: string[];
 }
-
-const TRADINGREF_EPAPER_PROXY_BASE = 'https://www.tradingref.com';
 
 interface ProgressSnapshot {
   status: 'running' | 'complete' | 'error';
@@ -350,105 +347,103 @@ function buildPasswordMap(urls: string[]): Record<string, string> {
   return map;
 }
 
-async function mergeLockedPdfsWithPython(urls: string[]): Promise<LockedPdfMergeResult> {
+async function mergeLockedPdfsWithCloudRun(urls: string[]): Promise<LockedPdfMergeResult> {
   if (!urls.length) {
     return { pdfData: null, pagesAdded: 0, failures: [] };
   }
 
-  const scriptPath = path.join(process.cwd(), 'scripts', 'merge_locked_pdfs.py');
-  const inputPayload = JSON.stringify({
-    urls,
-    passwords: buildPasswordMap(urls),
-  });
-
-  return await new Promise<LockedPdfMergeResult>((resolve) => {
-    const child = spawn('python', [scriptPath], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-
-    child.on('error', (error) => {
-      resolve({
-        pdfData: null,
-        pagesAdded: 0,
-        failures: [`Python process failed: ${error.message}`],
-      });
-    });
-
-    child.on('close', (code) => {
-      if (code !== 0 && !stdout.trim()) {
-        resolve({
-          pdfData: null,
-          pagesAdded: 0,
-          failures: [stderr.trim() || `Python exited with code ${code}`],
-        });
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(stdout || '{}') as {
-          ok?: boolean;
-          pagesAdded?: number;
-          pdfBase64?: string;
-          failures?: string[];
-          error?: string;
-        };
-
-        if (!parsed.ok || !parsed.pdfBase64) {
-          const failures = parsed.failures && parsed.failures.length
-            ? parsed.failures
-            : [parsed.error || 'Locked PDF merge returned no output'];
-          resolve({
-            pdfData: null,
-            pagesAdded: 0,
-            failures,
-          });
-          return;
-        }
-
-        resolve({
-          pdfData: new Uint8Array(Buffer.from(parsed.pdfBase64, 'base64')),
-          pagesAdded: parsed.pagesAdded ?? 0,
-          failures: parsed.failures ?? [],
-        });
-      } catch {
-        resolve({
-          pdfData: null,
-          pagesAdded: 0,
-          failures: [stderr.trim() || 'Failed to parse Python merge response'],
-        });
-      }
-    });
-
-    child.stdin.write(inputPayload);
-    child.stdin.end();
-  });
-}
-
-function buildEpaperProxyUrls(urls: string[]): string[] {
-  const proxied: string[] = [];
-
-  for (const rawUrl of urls) {
-    try {
-      const parsed = new URL(rawUrl);
-      proxied.push(`${TRADINGREF_EPAPER_PROXY_BASE}/epaper${parsed.pathname}`);
-    } catch {
-      // Keep original URL if parsing fails so downstream flow still attempts it.
-      proxied.push(rawUrl);
-    }
+  const configuredUrl = env.LOCKED_PDF_DECRYPT_URL?.trim();
+  if (!configuredUrl) {
+    return {
+      pdfData: null,
+      pagesAdded: 0,
+      failures: ['LOCKED_PDF_DECRYPT_URL is not configured'],
+    };
   }
 
-  return proxied;
+  let serviceUrl = configuredUrl;
+  if (!configuredUrl.endsWith('/merge-locked')) {
+    serviceUrl = `${configuredUrl.replace(/\/+$/, '')}/merge-locked`;
+  }
+
+  const inputPayload = {
+    urls,
+    passwords: buildPasswordMap(urls),
+  };
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  if (env.LOCKED_PDF_DECRYPT_TOKEN?.trim()) {
+    headers.Authorization = `Bearer ${env.LOCKED_PDF_DECRYPT_TOKEN.trim()}`;
+  }
+
+  try {
+    const response = await fetchWithRetry(
+      serviceUrl,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(inputPayload),
+        cache: 'no-store',
+        timeout: 60000,
+      },
+      {
+        maxRetries: 1,
+        retryDelay: 1000,
+      }
+    );
+
+    const rawText = await response.text();
+    let parsed: {
+      ok?: boolean;
+      pagesAdded?: number;
+      pdfBase64?: string;
+      failures?: string[];
+      error?: string;
+    } = {};
+
+    try {
+      parsed = JSON.parse(rawText || '{}');
+    } catch {
+      return {
+        pdfData: null,
+        pagesAdded: 0,
+        failures: [
+          response.ok
+            ? 'Cloud Run decrypt service returned invalid JSON'
+            : `Cloud Run decrypt service error (${response.status})`,
+        ],
+      };
+    }
+
+    if (!response.ok || !parsed.ok || !parsed.pdfBase64) {
+      return {
+        pdfData: null,
+        pagesAdded: 0,
+        failures: parsed.failures && parsed.failures.length
+          ? parsed.failures
+          : [parsed.error || `Cloud Run decrypt service failed (${response.status})`],
+      };
+    }
+
+    return {
+      pdfData: new Uint8Array(Buffer.from(parsed.pdfBase64, 'base64')),
+      pagesAdded: parsed.pagesAdded ?? 0,
+      failures: parsed.failures ?? [],
+    };
+  } catch (error) {
+    return {
+      pdfData: null,
+      pagesAdded: 0,
+      failures: [
+        error instanceof Error
+          ? `Cloud Run request failed: ${error.message}`
+          : 'Cloud Run request failed',
+      ],
+    };
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -608,32 +603,13 @@ export async function POST(request: NextRequest) {
                 updateProgressJob(
                   requestId,
                   { stage: 'decrypting', message: 'Decrypting locked PDF sources' },
-                  'Attempting password-aware merge for locked files'
+                  'Calling external Cloud Run decrypt service'
                 );
 
-                const lockedResult = await mergeLockedPdfsWithPython(urls);
+                const lockedResult = await mergeLockedPdfsWithCloudRun(urls);
                 pdfData = lockedResult.pdfData;
                 pagesAdded = lockedResult.pagesAdded;
                 generationFailures = lockedResult.failures;
-
-                // If direct-source decryption fails, retry through TradingRef epaper proxy URLs.
-                if (!pdfData) {
-                  updateProgressJob(
-                    requestId,
-                    { stage: 'decrypting', message: 'Trying TradingRef epaper proxy for locked files' },
-                    'Primary decryption failed; retrying via epaper proxy path'
-                  );
-
-                  const proxiedUrls = buildEpaperProxyUrls(urls);
-                  const proxyLockedResult = await mergeLockedPdfsWithPython(proxiedUrls);
-
-                  if (proxyLockedResult.pdfData) {
-                    pdfData = proxyLockedResult.pdfData;
-                    pagesAdded = proxyLockedResult.pagesAdded;
-                  } else {
-                    generationFailures = [...generationFailures, ...proxyLockedResult.failures];
-                  }
-                }
 
                 // Locked PDF flow must produce real decrypted output; avoid weak fallbacks that can generate blank PDFs.
                 if (!pdfData) {

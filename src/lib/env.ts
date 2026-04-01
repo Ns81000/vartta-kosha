@@ -10,6 +10,10 @@ const envSchema = z.object({
   
   // Public variables (exposed to browser)
   NEXT_PUBLIC_APP_URL: z.string().url().optional(),
+
+  // Locked PDF decrypt service (Cloud Run)
+  LOCKED_PDF_DECRYPT_URL: z.string().url().optional(),
+  LOCKED_PDF_DECRYPT_TOKEN: z.string().min(1).optional(),
   
   // Add other environment variables here as needed
   // Example: API_KEY: z.string().min(1, "API key is required"),

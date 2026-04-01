@@ -362,7 +362,6 @@ Purpose:
 
 1. Node.js 20+ recommended.
 2. pnpm.
-3. Python 3.10+ (for locked-PDF helper path).
 
 ### Install and run
 
@@ -382,17 +381,18 @@ pnpm start
 
 ## Operational Notes
 
-### Python dependency for locked PDF merge
+### Cloud Run dependency for locked PDF merge
 
-Install `pypdf` in the runtime used by the Next.js server process.
+Locked PDFs are decrypted through an external Cloud Run service.
 
-```bash
-pip install pypdf
-```
+Set the following server-side environment variables:
+
+1. `LOCKED_PDF_DECRYPT_URL`
+2. `LOCKED_PDF_DECRYPT_TOKEN` (optional but recommended)
 
 ### Runtime assumptions
 
-1. `scripts/merge_locked_pdfs.py` is available at runtime.
+1. Cloud Run decrypt service is reachable from the Next.js runtime.
 2. External endpoints are reachable:
 	 1. `https://data.tradingref.com`
 	 2. `https://images.weserv.nl`
