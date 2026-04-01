@@ -13,7 +13,7 @@ import { rateLimit, RateLimitPresets } from '@/lib/rate-limit';
 import { fetchWithTimeout, fetchWithRetry, externalApiCircuitBreaker } from '@/lib/fetch-utils';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 interface PdfRequest {
   date: string;
@@ -462,10 +462,13 @@ async function mergeLockedPdfsWithCloudRun(
         headers,
         body: JSON.stringify(inputPayload),
         cache: 'no-store',
-        timeout: 60000,
+        // Keep this below the route timeout so we can return a controlled error
+        // instead of letting the platform emit a generic 504.
+        timeout: 45000,
       },
       {
-        maxRetries: 1,
+        // Avoid extending total runtime with retries in serverless execution.
+        maxRetries: 0,
         retryDelay: 1000,
       }
     );
