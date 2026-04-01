@@ -268,7 +268,7 @@ export default function Home() {
 
         {/* Download Progress Section */}
         <AnimatePresence>
-          {(progress || downloadReady || error) && (
+          {(progress || downloadReady || error || loading.download) && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}

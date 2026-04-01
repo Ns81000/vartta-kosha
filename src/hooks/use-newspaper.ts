@@ -67,6 +67,7 @@ export function useNewspaper() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const downloadInFlightRef = useRef(false);
   const downloadUrlRef = useRef<string | null>(null);
+  const downloadFileIdRef = useRef<string | null>(null);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -389,6 +390,7 @@ export function useNewspaper() {
       downloadReady: false,
     }));
     downloadUrlRef.current = null;
+    downloadFileIdRef.current = null;
 
     // Start polling immediately with faster interval for real-time updates
     void pollProgress(requestId);
@@ -421,8 +423,9 @@ export function useNewspaper() {
       // Stop polling since we have the result
       stopPolling();
 
-      if (response.ok && data.success && data.pdfUrl) {
-        downloadUrlRef.current = data.pdfUrl;
+      if (response.ok && data.success && (data.fileId || data.pdfUrl)) {
+        downloadFileIdRef.current = typeof data.fileId === 'string' ? data.fileId : null;
+        downloadUrlRef.current = typeof data.pdfUrl === 'string' ? data.pdfUrl : null;
         setState(prev => ({
           ...prev,
           // Keep large payload out of React state to avoid mobile UI freezes.
@@ -473,26 +476,60 @@ export function useNewspaper() {
     }
   }, [state.date, state.language, state.newspaper, state.edition, stopPolling, pollProgress]);
 
-  const triggerDownload = useCallback(() => {
+  const triggerDownload = useCallback(async () => {
+    const fileId = downloadFileIdRef.current;
     const activeUrl = downloadUrlRef.current || state.downloadUrl;
-    if (!activeUrl) return;
+
+    if (!fileId && !activeUrl) {
+      return;
+    }
     
     // Create filename from selections
     const dateStr = state.date ? format(state.date, 'yyyy-MM-dd') : 'newspaper';
     const filename = `${state.newspaper || 'newspaper'}_${dateStr}.pdf`;
-    
-    const link = document.createElement('a');
-    link.href = activeUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+
+    try {
+      if (fileId) {
+        const response = await fetch(`/api/pdf?fileId=${encodeURIComponent(fileId)}`, {
+          method: 'GET',
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch generated PDF file');
+        }
+
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+
+      const link = document.createElement('a');
+      link.href = activeUrl as string;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch {
+      setState(prev => ({
+        ...prev,
+        error: 'Download link expired. Please generate the PDF again.',
+      }));
+    }
   }, [state.downloadUrl, state.date, state.newspaper]);
 
   const cancelDownload = useCallback(() => {
     stopPolling();
     downloadInFlightRef.current = false;
     downloadUrlRef.current = null;
+    downloadFileIdRef.current = null;
     setState(prev => ({
       ...prev,
       loading: { ...prev.loading, download: false },
@@ -507,6 +544,7 @@ export function useNewspaper() {
     stopPolling();
     downloadInFlightRef.current = false;
     downloadUrlRef.current = null;
+    downloadFileIdRef.current = null;
     setState({
       date: null,
       language: null,

@@ -60,8 +60,15 @@ interface ProgressSnapshot {
   updatedAt: string;
 }
 
+interface GeneratedFileEntry {
+  pdfData: Uint8Array;
+  createdAt: number;
+  fileName: string;
+}
+
 const PROGRESS_TTL_MS = 15 * 60 * 1000;
 const progressJobs = new Map<string, ProgressSnapshot>();
+const generatedFiles = new Map<string, GeneratedFileEntry>();
 const PARALLEL_SOURCE_DOWNLOADS = 3;
 
 function nowIso(): string {
@@ -103,6 +110,15 @@ function pruneProgressJobs(): void {
     const age = now - new Date(job.updatedAt).getTime();
     if (age > PROGRESS_TTL_MS) {
       progressJobs.delete(jobId);
+    }
+  }
+}
+
+function pruneGeneratedFiles(): void {
+  const now = Date.now();
+  for (const [fileId, file] of generatedFiles.entries()) {
+    if (now - file.createdAt > PROGRESS_TTL_MS) {
+      generatedFiles.delete(fileId);
     }
   }
 }
@@ -511,6 +527,36 @@ async function mergeLockedPdfsWithCloudRun(
 }
 
 export async function GET(request: NextRequest) {
+  const fileId = request.nextUrl.searchParams.get('fileId');
+  if (fileId) {
+    const fileRateLimit = await rateLimit(request, {
+      ...RateLimitPresets.standard,
+      maxRequests: 60,
+      keyGenerator: (req) => `${buildClientKey(req)}:pdf-file:${fileId}`,
+    });
+    if (!fileRateLimit.success) {
+      return fileRateLimit.response;
+    }
+
+    pruneGeneratedFiles();
+    const stored = generatedFiles.get(fileId);
+    if (!stored) {
+      return NextResponse.json(
+        { success: false, error: 'Requested PDF is no longer available. Please generate again.' },
+        { status: 404 }
+      );
+    }
+
+    return new NextResponse(stored.pdfData, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${stored.fileName}"`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+
   // Polling can be frequent, so key by client + job to avoid cross-user throttling.
   const jobId = request.nextUrl.searchParams.get('jobId');
   const rateLimitResult = await rateLimit(request, {
@@ -569,6 +615,7 @@ export async function POST(request: NextRequest) {
   }
 
   pruneProgressJobs();
+  pruneGeneratedFiles();
 
   let requestId = '';
 
@@ -757,14 +804,18 @@ export async function POST(request: NextRequest) {
                   'PDF generation complete'
                 );
 
-                // Return as base64 data URL
-                const base64 = Buffer.from(pdfData).toString('base64');
-                const dataUrl = `data:application/pdf;base64,${base64}`;
+                const fileId = crypto.randomUUID();
+                const fileName = `newspaper_${date}_${newspaper}.pdf`;
+                generatedFiles.set(fileId, {
+                  pdfData,
+                  createdAt: Date.now(),
+                  fileName,
+                });
                 
                 return NextResponse.json({
                   success: true,
                   requestId,
-                  pdfUrl: dataUrl,
+                  fileId,
                   pagesAdded,
                   source: 'live',
                   isPasswordProtected: normalizedType === 'pdfl',
