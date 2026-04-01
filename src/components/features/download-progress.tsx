@@ -13,6 +13,7 @@ import {
   X,
   ChevronDown,
   ChevronUp,
+  Clock,
 } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '@/lib/utils/cn';
@@ -275,6 +276,27 @@ export function DownloadProgress({
               </div>
             )}
           </div>
+
+          {/* Reassuring Message */}
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 3, duration: 0.5 }}
+            className={cn(
+              'rounded-xl p-3 mb-4',
+              'bg-gradient-to-r from-[var(--accent-primary)]/5 to-[var(--accent-secondary)]/5',
+              'border border-[var(--accent-primary)]/10'
+            )}
+          >
+            <div className="flex items-start gap-2.5">
+              <Clock className="w-4 h-4 text-[var(--accent-primary)] flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                <span className="font-medium text-[var(--text-primary)]">Processing large files?</span>
+                {' '}If progress appears paused, don&apos;t worry — the server is actively working. 
+                Decryption and merging can take a moment. Just hang tight! ✨
+              </p>
+            </div>
+          </motion.div>
 
           {/* Logs Section */}
           {progress.logs && progress.logs.length > 0 && (
