@@ -10,6 +10,8 @@ import { IMAGE_PROXY_BASE } from '@/lib/constants';
 import { PDFDocument } from 'pdf-lib';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { rateLimit, RateLimitPresets } from '@/lib/rate-limit';
+import { fetchWithTimeout, fetchWithRetry, externalApiCircuitBreaker } from '@/lib/fetch-utils';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -161,24 +163,38 @@ function sniffFileType(data: Uint8Array, contentType: string, sourceUrl: string)
 
 async function downloadAsset(url: string): Promise<DownloadedAsset | null> {
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        Accept: 'application/pdf,image/*,*/*',
-      },
-      cache: 'no-store',
+    // Use circuit breaker to prevent cascading failures
+    return await externalApiCircuitBreaker.execute('pdf-download', async () => {
+      // Fetch with 30s timeout and retry logic
+      const response = await fetchWithRetry(
+        url,
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            Accept: 'application/pdf,image/*,*/*',
+          },
+          cache: 'no-store',
+          timeout: 30000, // 30 second timeout
+        },
+        {
+          maxRetries: 2,
+          retryDelay: 1000,
+        }
+      );
+      
+      if (!response.ok) return null;
+
+      const contentType = response.headers.get('content-type') ?? '';
+      const data = new Uint8Array(await response.arrayBuffer());
+      if (!data.length) return null;
+
+      return {
+        data,
+        fileType: sniffFileType(data, contentType, url),
+      };
     });
-    if (!response.ok) return null;
-
-    const contentType = response.headers.get('content-type') ?? '';
-    const data = new Uint8Array(await response.arrayBuffer());
-    if (!data.length) return null;
-
-    return {
-      data,
-      fileType: sniffFileType(data, contentType, url),
-    };
-  } catch {
+  } catch (error) {
+    console.error('Asset download failed:', error);
     return null;
   }
 }
@@ -186,17 +202,22 @@ async function downloadAsset(url: string): Promise<DownloadedAsset | null> {
 async function downloadProxyImage(url: string): Promise<DownloadedAsset | null> {
   try {
     const proxyUrl = `${IMAGE_PROXY_BASE}/?url=${encodeURIComponent(url)}&maxage=1d&output=jpg&q=80`;
-    const response = await fetch(proxyUrl);
-    if (!response.ok) return null;
+    
+    // Use circuit breaker and timeout for proxy requests
+    return await externalApiCircuitBreaker.execute('image-proxy', async () => {
+      const response = await fetchWithTimeout(proxyUrl, { timeout: 20000 });
+      if (!response.ok) return null;
 
-    const data = new Uint8Array(await response.arrayBuffer());
-    if (!data.length) return null;
+      const data = new Uint8Array(await response.arrayBuffer());
+      if (!data.length) return null;
 
-    return {
-      data,
-      fileType: 'jpg',
-    };
-  } catch {
+      return {
+        data,
+        fileType: 'jpg',
+      };
+    });
+  } catch (error) {
+    console.error('Proxy image download failed:', error);
     return null;
   }
 }
@@ -413,6 +434,12 @@ async function mergeLockedPdfsWithPython(urls: string[]): Promise<LockedPdfMerge
 }
 
 export async function GET(request: NextRequest) {
+  // Apply rate limiting - relaxed for status checks
+  const rateLimitResult = await rateLimit(request, RateLimitPresets.relaxed);
+  if (!rateLimitResult.success) {
+    return rateLimitResult.response;
+  }
+
   pruneProgressJobs();
   const jobId = request.nextUrl.searchParams.get('jobId');
 
@@ -439,11 +466,28 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  // Apply strict rate limiting for PDF generation (resource-intensive)
+  const rateLimitResult = await rateLimit(request, RateLimitPresets.strict);
+  if (!rateLimitResult.success) {
+    return rateLimitResult.response;
+  }
+
   pruneProgressJobs();
 
   let requestId = '';
 
   try {
+    // Validate request body size (limit to 1MB)
+    const contentLength = request.headers.get('content-length');
+    const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+    
+    if (contentLength && parseInt(contentLength, 10) > MAX_BODY_SIZE) {
+      return NextResponse.json(
+        { success: false, error: 'Request body too large' },
+        { status: 413 }
+      );
+    }
+
     const body: PdfRequest = await request.json();
     requestId = (typeof body.requestId === 'string' && body.requestId.trim())
       ? body.requestId.trim()
@@ -465,6 +509,7 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // Validate date format
     if (!validateDateString(date)) {
       updateProgressJob(
         requestId,
@@ -472,7 +517,24 @@ export async function POST(request: NextRequest) {
         `Invalid date supplied: ${date}`
       );
       return NextResponse.json(
-        { success: false, error: 'Invalid date format', requestId },
+        { success: false, error: 'Invalid date format. Expected YYYYMMDD.', requestId },
+        { status: 400 }
+      );
+    }
+    
+    // Validate parameter lengths and patterns to prevent injection
+    if (
+      typeof language !== 'string' || language.length > 50 ||
+      typeof newspaper !== 'string' || newspaper.length > 100 ||
+      typeof edition !== 'string' || edition.length > 100
+    ) {
+      updateProgressJob(
+        requestId,
+        { status: 'error', stage: 'error', message: 'Parameter validation failed' },
+        'Invalid parameter format or length'
+      );
+      return NextResponse.json(
+        { success: false, error: 'Invalid request parameters', requestId },
         { status: 400 }
       );
     }
@@ -638,13 +700,20 @@ export async function POST(request: NextRequest) {
       updateProgressJob(
         requestId,
         { status: 'error', stage: 'error', message: 'Unexpected server error occurred' },
-        error instanceof Error ? error.message : 'Unknown server error'
+        'Internal processing error'
       );
     }
 
+    // Log full error for debugging but don't expose details to client
     console.error('PDF API error:', error);
+    
+    // Return sanitized error response
     return NextResponse.json(
-      { success: false, requestId, error: 'Failed to generate PDF. Please try again.' },
+      { 
+        success: false, 
+        requestId, 
+        error: 'An unexpected error occurred. Please try again later.' 
+      },
       { status: 500 }
     );
   }

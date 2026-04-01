@@ -52,12 +52,16 @@ export function useNewspaper() {
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
     };
   }, []);
@@ -66,6 +70,10 @@ export function useNewspaper() {
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
     currentRequestIdRef.current = null;
   }, []);
@@ -91,8 +99,13 @@ export function useNewspaper() {
     if (!date) return;
 
     try {
+      // Create new abort controller for this request
+      abortControllerRef.current = new AbortController();
+      
       const dateStr = format(date, 'yyyyMMdd');
-      const response = await fetch(`/api/data/${dateStr}`);
+      const response = await fetch(`/api/data/${dateStr}`, {
+        signal: abortControllerRef.current.signal,
+      });
       const data = await response.json();
 
       if (data.success) {
@@ -108,7 +121,12 @@ export function useNewspaper() {
           loading: { ...prev.loading, languages: false },
         }));
       }
-    } catch {
+    } catch (error) {
+      // Don't show error if request was aborted (user changed selection)
+      if (error instanceof Error && error.name === 'AbortError') {
+        return;
+      }
+      
       setState(prev => ({
         ...prev,
         error: 'Network error. Please try again.',
@@ -117,7 +135,7 @@ export function useNewspaper() {
     }
   }, [stopPolling]);
 
-  const setLanguage = useCallback(async (languageId: string | null) => {
+  const setLanguage = useCallback(async (languageId: string | null, currentDate: Date | null) => {
     stopPolling();
     setState(prev => ({
       ...prev,
@@ -133,12 +151,16 @@ export function useNewspaper() {
       loading: { ...prev.loading, newspapers: !!languageId },
     }));
 
-    if (!languageId || !state.date) return;
+    if (!languageId || !currentDate) return;
 
     try {
-      const dateStr = format(state.date, 'yyyyMMdd');
+      // Create new abort controller for this request
+      abortControllerRef.current = new AbortController();
+      
+      const dateStr = format(currentDate, 'yyyyMMdd');
       const response = await fetch(
-        `/api/newspapers?date=${dateStr}&language=${languageId}`
+        `/api/newspapers?date=${dateStr}&language=${languageId}`,
+        { signal: abortControllerRef.current.signal }
       );
       const data = await response.json();
 
@@ -155,16 +177,25 @@ export function useNewspaper() {
           loading: { ...prev.loading, newspapers: false },
         }));
       }
-    } catch {
+    } catch (error) {
+      // Don't show error if request was aborted
+      if (error instanceof Error && error.name === 'AbortError') {
+        return;
+      }
+      
       setState(prev => ({
         ...prev,
         error: 'Network error. Please try again.',
         loading: { ...prev.loading, newspapers: false },
       }));
     }
-  }, [state.date, stopPolling]);
+  }, [stopPolling]);
 
-  const setNewspaper = useCallback(async (newspaperId: string | null) => {
+  const setNewspaper = useCallback(async (
+    newspaperId: string | null,
+    currentDate: Date | null,
+    currentLanguage: string | null
+  ) => {
     stopPolling();
     setState(prev => ({
       ...prev,
@@ -178,12 +209,12 @@ export function useNewspaper() {
       loading: { ...prev.loading, editions: !!newspaperId },
     }));
 
-    if (!newspaperId || !state.date || !state.language) return;
+    if (!newspaperId || !currentDate || !currentLanguage) return;
 
     try {
-      const dateStr = format(state.date, 'yyyyMMdd');
+      const dateStr = format(currentDate, 'yyyyMMdd');
       const response = await fetch(
-        `/api/editions?date=${dateStr}&language=${state.language}&newspaper=${newspaperId}`
+        `/api/editions?date=${dateStr}&language=${currentLanguage}&newspaper=${newspaperId}`
       );
       const data = await response.json();
 
@@ -207,7 +238,7 @@ export function useNewspaper() {
         loading: { ...prev.loading, editions: false },
       }));
     }
-  }, [state.date, state.language, stopPolling]);
+  }, [stopPolling]);
 
   const setEdition = useCallback((editionId: string | null) => {
     stopPolling();
@@ -400,11 +431,20 @@ export function useNewspaper() {
   const selectedNewspaper = state.newspapers.find(n => n.id === state.newspaper);
   const selectedEdition = state.editions.find(e => e.id === state.edition);
 
+  // Create wrapper functions that access current state
+  const handleSetLanguage = useCallback((languageId: string | null) => {
+    setLanguage(languageId, state.date);
+  }, [setLanguage, state.date]);
+
+  const handleSetNewspaper = useCallback((newspaperId: string | null) => {
+    setNewspaper(newspaperId, state.date, state.language);
+  }, [setNewspaper, state.date, state.language]);
+
   return {
     ...state,
     setDate,
-    setLanguage,
-    setNewspaper,
+    setLanguage: handleSetLanguage,
+    setNewspaper: handleSetNewspaper,
     setEdition,
     startDownload,
     triggerDownload,

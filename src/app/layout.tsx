@@ -1,6 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans, Inter } from "next/font/google";
 import "./globals.css";
+import { validateEnv } from "@/lib/env";
+import { ErrorBoundary } from "@/components/error-boundary";
+
+// Validate environment variables at app startup
+validateEnv();
 
 const plusJakarta = Plus_Jakarta_Sans({
   variable: "--font-heading",
@@ -61,7 +66,9 @@ export default function RootLayout({
       className={`${plusJakarta.variable} ${inter.variable}`}
     >
       <body className="min-h-screen bg-[var(--bg-base)]">
-        {children}
+        <ErrorBoundary>
+          {children}
+        </ErrorBoundary>
       </body>
     </html>
   );

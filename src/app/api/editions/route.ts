@@ -5,10 +5,17 @@ import {
   findMatchingKey,
 } from '@/lib/api/tradingref';
 import { validateDateString, validateLanguage, validateNewspaperName } from '@/lib/utils/sanitize';
+import { rateLimit, RateLimitPresets } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+  // Apply rate limiting
+  const rateLimitResult = await rateLimit(request, RateLimitPresets.standard);
+  if (!rateLimitResult.success) {
+    return rateLimitResult.response;
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const date = searchParams.get('date');
@@ -57,6 +64,10 @@ export async function GET(request: NextRequest) {
             success: true,
             editions,
             source: 'live',
+          }, {
+            headers: {
+              'Cache-Control': 'public, s-maxage=1800, stale-while-revalidate=3600',
+            },
           });
         }
       }
@@ -68,9 +79,10 @@ export async function GET(request: NextRequest) {
     );
     
   } catch (error) {
+    // Log for debugging but don't expose details
     console.error('Editions API error:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch editions. Please try again.' },
+      { success: false, error: 'An unexpected error occurred. Please try again later.' },
       { status: 500 }
     );
   }

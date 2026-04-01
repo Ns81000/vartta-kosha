@@ -4,6 +4,7 @@ import {
   extractLanguages 
 } from '@/lib/api/tradingref';
 import { validateDateString } from '@/lib/utils/sanitize';
+import { rateLimit, RateLimitPresets } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,6 +17,12 @@ export async function GET(
   request: NextRequest,
   { params }: RouteParams
 ) {
+  // Apply rate limiting
+  const rateLimitResult = await rateLimit(request, RateLimitPresets.standard);
+  if (!rateLimitResult.success) {
+    return rateLimitResult.response;
+  }
+
   try {
     const { date } = await params;
     
@@ -39,6 +46,10 @@ export async function GET(
         languages,
         languageCount: languages.length,
         source: 'live',
+      }, {
+        headers: {
+          'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+        },
       });
     }
     
@@ -53,9 +64,10 @@ export async function GET(
     );
     
   } catch (error) {
+    // Log for debugging but don't expose details
     console.error('Date API error:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch newspaper data. Please try again.' },
+      { success: false, error: 'An unexpected error occurred. Please try again later.' },
       { status: 500 }
     );
   }

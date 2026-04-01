@@ -1,4 +1,9 @@
 export function sanitizeName(name: string): string {
+  // Validate input
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return 'unknown';
+  }
+  
   return name
     .replace(/[<>:"/\\|?*]/g, '')
     .replace(/\s+/g, '-')
@@ -8,6 +13,11 @@ export function sanitizeName(name: string): string {
 }
 
 export function unsanitizeName(sanitized: string): string {
+  // Validate input
+  if (!sanitized || typeof sanitized !== 'string' || sanitized.trim().length === 0) {
+    return '';
+  }
+  
   return sanitized
     .split('-')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
