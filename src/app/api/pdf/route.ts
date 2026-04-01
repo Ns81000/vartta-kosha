@@ -547,7 +547,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return new NextResponse(stored.pdfData, {
+    const normalizedPdfData = new Uint8Array(stored.pdfData.byteLength);
+    normalizedPdfData.set(stored.pdfData);
+    const pdfBody = new Blob([normalizedPdfData], { type: 'application/pdf' });
+
+    return new NextResponse(pdfBody, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
