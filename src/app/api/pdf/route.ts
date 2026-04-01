@@ -616,7 +616,7 @@ export async function POST(request: NextRequest) {
                 pagesAdded = lockedResult.pagesAdded;
                 generationFailures = lockedResult.failures;
 
-                // If Python decryption fails, try image fallback as a last resort.
+                // If direct-source decryption fails, retry through TradingRef epaper proxy URLs.
                 if (!pdfData) {
                   updateProgressJob(
                     requestId,
@@ -625,34 +625,34 @@ export async function POST(request: NextRequest) {
                   );
 
                   const proxiedUrls = buildEpaperProxyUrls(urls);
-                  const proxyMerge = await generatePdfFromUrls(proxiedUrls, (current, total, message) => {
-                    updateProgressJob(
-                      requestId,
-                      { stage: 'decrypting', message, current, total }
-                    );
-                  });
+                  const proxyLockedResult = await mergeLockedPdfsWithPython(proxiedUrls);
 
-                  if (proxyMerge.pdfData) {
-                    pdfData = proxyMerge.pdfData;
-                    pagesAdded = proxyMerge.pagesAdded;
+                  if (proxyLockedResult.pdfData) {
+                    pdfData = proxyLockedResult.pdfData;
+                    pagesAdded = proxyLockedResult.pagesAdded;
+                  } else {
+                    generationFailures = [...generationFailures, ...proxyLockedResult.failures];
                   }
                 }
 
+                // Locked PDF flow must produce real decrypted output; avoid weak fallbacks that can generate blank PDFs.
                 if (!pdfData) {
                   updateProgressJob(
                     requestId,
-                    { stage: 'downloading', message: 'Decryption failed, switching to fallback conversion' },
-                    'Primary decryption did not return pages; trying image conversion fallback'
+                    { status: 'error', stage: 'error', message: 'Locked PDF decryption failed for this edition' },
+                    'All locked-PDF decryption attempts failed; returning explicit error to avoid blank output'
                   );
 
-                  const fallback = await generatePdfFromUrls(urls, (current, total, message) => {
-                    updateProgressJob(
+                  return NextResponse.json(
+                    {
+                      success: false,
                       requestId,
-                      { stage: 'downloading', message, current, total }
-                    );
-                  });
-                  pdfData = fallback.pdfData;
-                  pagesAdded = fallback.pagesAdded;
+                      error:
+                        'Unable to decrypt locked PDF sources for this edition right now. Please try again later or choose another edition.',
+                      details: generationFailures,
+                    },
+                    { status: 422 }
+                  );
                 }
               } else {
                 const generated = await generatePdfFromUrls(urls, (current, total, message) => {
