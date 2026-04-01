@@ -290,7 +290,8 @@ async function addPdfToPdf(target: PDFDocument, data: Uint8Array): Promise<numbe
 
 async function generatePdfFromUrls(
   urls: string[],
-  onProgress?: (current: number, total: number, message: string, log: string) => void
+  onProgress?: (current: number, total: number, message: string, log: string) => void,
+  onBeforeFinalize?: (pagesAdded: number, sourceTotal: number) => void
 ): Promise<GeneratedPdfResult> {
   const mergedPdf = await PDFDocument.create();
   let pagesAdded = 0;
@@ -365,6 +366,8 @@ async function generatePdfFromUrls(
   if (!pagesAdded) {
     return { pdfData: null, pagesAdded: 0 };
   }
+
+  onBeforeFinalize?.(pagesAdded, urls.length);
 
   return {
     pdfData: await mergedPdf.save(),
@@ -547,15 +550,12 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const normalizedPdfData = new Uint8Array(stored.pdfData.byteLength);
-    normalizedPdfData.set(stored.pdfData);
-    const pdfBody = new Blob([normalizedPdfData], { type: 'application/pdf' });
-
-    return new NextResponse(pdfBody, {
+    return new NextResponse(stored.pdfData, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${stored.fileName}"`,
+        'Content-Length': String(stored.pdfData.byteLength),
         'Cache-Control': 'no-store',
       },
     });
@@ -772,13 +772,28 @@ export async function POST(request: NextRequest) {
                   );
                 }
               } else {
-                const generated = await generatePdfFromUrls(urls, (current, total, message, log) => {
-                  updateProgressJob(
-                    requestId,
-                    { stage: 'downloading', message, current, total },
-                    log
-                  );
-                });
+                const generated = await generatePdfFromUrls(
+                  urls,
+                  (current, total, message, log) => {
+                    updateProgressJob(
+                      requestId,
+                      { stage: 'downloading', message, current, total },
+                      log
+                    );
+                  },
+                  (finalPagesAdded) => {
+                    updateProgressJob(
+                      requestId,
+                      {
+                        stage: 'merging',
+                        message: 'Finalizing PDF document...',
+                        current: finalPagesAdded,
+                        total: finalPagesAdded,
+                      },
+                      'Compacting and preparing final download'
+                    );
+                  }
+                );
                 pdfData = generated.pdfData;
                 pagesAdded = generated.pagesAdded;
               }

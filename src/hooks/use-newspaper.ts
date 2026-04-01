@@ -490,24 +490,13 @@ export function useNewspaper() {
 
     try {
       if (fileId) {
-        const response = await fetch(`/api/pdf?fileId=${encodeURIComponent(fileId)}`, {
-          method: 'GET',
-          cache: 'no-store',
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch generated PDF file');
-        }
-
-        const blob = await response.blob();
-        const objectUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.href = objectUrl;
+        link.href = `/api/pdf?fileId=${encodeURIComponent(fileId)}`;
         link.download = filename;
+        link.rel = 'noopener';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        URL.revokeObjectURL(objectUrl);
         return;
       }
 
