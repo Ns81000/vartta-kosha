@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel
-from pypdf import PdfReader, PdfWriter
+import pikepdf
 
 
 app = FastAPI()
@@ -63,29 +63,39 @@ def _password_candidates(url: str, provided: dict[str, str]) -> list[str]:
     return deduped
 
 
-def _add_pdf_pages(writer: PdfWriter, data: bytes, passwords: list[str]) -> int:
-    reader = PdfReader(io.BytesIO(data), strict=False)
+def _try_open_pdf(data: bytes, passwords: list[str]) -> pikepdf.Pdf:
+    """
+    Try to open a PDF with password candidates.
+    pikepdf handles encryption natively - just try passwords until one works.
+    """
+    # First try without password (unencrypted PDFs)
+    try:
+        return pikepdf.open(io.BytesIO(data))
+    except pikepdf.PasswordError:
+        pass  # It's encrypted, try passwords
+    except Exception as exc:
+        raise ValueError(f"Failed to open PDF: {exc}")
 
-    if reader.is_encrypted:
-        if not passwords:
-            raise ValueError("missing password")
+    # Try each password candidate
+    if not passwords:
+        raise ValueError("PDF is encrypted but no passwords provided")
 
-        unlocked = False
-        for password in passwords:
-            try:
-                decrypt_res = reader.decrypt(password)
-            except Exception:  # noqa: BLE001
-                continue
-            if decrypt_res != 0:
-                unlocked = True
-                break
+    for password in passwords:
+        try:
+            return pikepdf.open(io.BytesIO(data), password=password)
+        except pikepdf.PasswordError:
+            continue  # Wrong password, try next
+        except Exception as exc:
+            raise ValueError(f"Failed to open PDF with password: {exc}")
 
-        if not unlocked:
-            raise ValueError("invalid password")
+    raise ValueError("All password attempts failed")
 
+
+def _merge_pdf_into_writer(writer: pikepdf.Pdf, source: pikepdf.Pdf) -> int:
+    """Merge all pages from source PDF into the writer PDF."""
     count = 0
-    for page in reader.pages:
-        writer.add_page(page)
+    for page in source.pages:
+        writer.pages.append(page)
         count += 1
     return count
 
@@ -128,7 +138,8 @@ def merge_locked(
     if not payload.urls:
         raise HTTPException(status_code=400, detail="urls are required")
 
-    writer = PdfWriter()
+    # Create a new blank PDF to merge into
+    writer = pikepdf.new()
     pages_added = 0
     failures: list[str] = []
 
@@ -140,7 +151,16 @@ def merge_locked(
                 continue
 
             password_candidates = _password_candidates(url, payload.passwords)
-            pages_added += _add_pdf_pages(writer, data, password_candidates)
+            
+            # Open the PDF (with decryption if needed)
+            source_pdf = _try_open_pdf(data, password_candidates)
+            
+            # Merge pages into the writer
+            pages_added += _merge_pdf_into_writer(writer, source_pdf)
+            
+            # Close the source PDF
+            source_pdf.close()
+            
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{url}: {exc}")
 
@@ -151,8 +171,10 @@ def merge_locked(
             "failures": failures,
         }
 
+    # Save the merged PDF to bytes
     out = io.BytesIO()
-    writer.write(out)
+    writer.save(out)
+    writer.close()
 
     return {
         "ok": True,
