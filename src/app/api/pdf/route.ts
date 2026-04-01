@@ -50,6 +50,8 @@ interface LockedPdfMergeResult extends GeneratedPdfResult {
   failures: string[];
 }
 
+const TRADINGREF_EPAPER_PROXY_BASE = 'https://www.tradingref.com';
+
 interface ProgressSnapshot {
   status: 'running' | 'complete' | 'error';
   stage: 'validating' | 'fetching' | 'downloading' | 'decrypting' | 'merging' | 'complete' | 'error';
@@ -433,6 +435,22 @@ async function mergeLockedPdfsWithPython(urls: string[]): Promise<LockedPdfMerge
   });
 }
 
+function buildEpaperProxyUrls(urls: string[]): string[] {
+  const proxied: string[] = [];
+
+  for (const rawUrl of urls) {
+    try {
+      const parsed = new URL(rawUrl);
+      proxied.push(`${TRADINGREF_EPAPER_PROXY_BASE}/epaper${parsed.pathname}`);
+    } catch {
+      // Keep original URL if parsing fails so downstream flow still attempts it.
+      proxied.push(rawUrl);
+    }
+  }
+
+  return proxied;
+}
+
 export async function GET(request: NextRequest) {
   // Apply rate limiting - relaxed for status checks
   const rateLimitResult = await rateLimit(request, RateLimitPresets.relaxed);
@@ -599,6 +617,27 @@ export async function POST(request: NextRequest) {
                 generationFailures = lockedResult.failures;
 
                 // If Python decryption fails, try image fallback as a last resort.
+                if (!pdfData) {
+                  updateProgressJob(
+                    requestId,
+                    { stage: 'decrypting', message: 'Trying TradingRef epaper proxy for locked files' },
+                    'Primary decryption failed; retrying via epaper proxy path'
+                  );
+
+                  const proxiedUrls = buildEpaperProxyUrls(urls);
+                  const proxyMerge = await generatePdfFromUrls(proxiedUrls, (current, total, message) => {
+                    updateProgressJob(
+                      requestId,
+                      { stage: 'decrypting', message, current, total }
+                    );
+                  });
+
+                  if (proxyMerge.pdfData) {
+                    pdfData = proxyMerge.pdfData;
+                    pagesAdded = proxyMerge.pagesAdded;
+                  }
+                }
+
                 if (!pdfData) {
                   updateProgressJob(
                     requestId,
