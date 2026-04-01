@@ -264,18 +264,18 @@ async function addPdfToPdf(target: PDFDocument, data: Uint8Array): Promise<numbe
 
 async function generatePdfFromUrls(
   urls: string[],
-  onProgress?: (current: number, total: number, message: string) => void
+  onProgress?: (current: number, total: number, message: string, log: string) => void
 ): Promise<GeneratedPdfResult> {
   const mergedPdf = await PDFDocument.create();
   let pagesAdded = 0;
 
   for (let i = 0; i < urls.length; i++) {
     const url = urls[i];
-    onProgress?.(i, urls.length, `Downloading source ${i + 1} of ${urls.length}`);
+    onProgress?.(i, urls.length, `Downloading source ${i + 1} of ${urls.length}`, `Starting download: source ${i + 1}`);
 
     const asset = await downloadAsset(url);
     if (!asset) {
-      onProgress?.(i + 1, urls.length, `Source ${i + 1} unavailable, moving to next`);
+      onProgress?.(i + 1, urls.length, `Source ${i + 1} unavailable, moving to next`, `⚠️ Source ${i + 1} unavailable`);
       continue;
     }
 
@@ -283,7 +283,7 @@ async function generatePdfFromUrls(
       const pdfPages = await addPdfToPdf(mergedPdf, asset.data);
       if (pdfPages > 0) {
         pagesAdded += pdfPages;
-        onProgress?.(i + 1, urls.length, `Merged PDF source ${i + 1} (${pdfPages} pages)`);
+        onProgress?.(i + 1, urls.length, `Merged PDF source ${i + 1} (${pdfPages} pages)`, `✓ Merged PDF ${i + 1}: ${pdfPages} pages`);
         continue;
       }
 
@@ -292,7 +292,7 @@ async function generatePdfFromUrls(
         const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
         if (ok) {
           pagesAdded += 1;
-          onProgress?.(i + 1, urls.length, `Recovered source ${i + 1} via image fallback`);
+          onProgress?.(i + 1, urls.length, `Recovered source ${i + 1} via image fallback`, `✓ Recovered ${i + 1} via proxy`);
         }
       }
       continue;
@@ -302,21 +302,21 @@ async function generatePdfFromUrls(
       const ok = await addImageToPdf(mergedPdf, asset.data);
       if (ok) {
         pagesAdded += 1;
-        onProgress?.(i + 1, urls.length, `Embedded image source ${i + 1}`);
+        onProgress?.(i + 1, urls.length, `Embedded image source ${i + 1}`, `✓ Embedded image ${i + 1}`);
       }
       continue;
     }
 
     const proxyAsset = await downloadProxyImage(url);
     if (!proxyAsset) {
-      onProgress?.(i + 1, urls.length, `Unsupported source ${i + 1}, skipped`);
+      onProgress?.(i + 1, urls.length, `Unsupported source ${i + 1}, skipped`, `⚠️ Skipped unsupported source ${i + 1}`);
       continue;
     }
 
     const ok = await addImageToPdf(mergedPdf, proxyAsset.data);
     if (ok) {
       pagesAdded += 1;
-      onProgress?.(i + 1, urls.length, `Converted source ${i + 1} through proxy`);
+      onProgress?.(i + 1, urls.length, `Converted source ${i + 1} through proxy`, `✓ Converted ${i + 1} via proxy`);
     }
   }
 
@@ -350,7 +350,8 @@ function buildPasswordMapFromPages(pages: string[]): Record<string, string> {
 
 async function mergeLockedPdfsWithCloudRun(
   urls: string[],
-  passwords: Record<string, string>
+  passwords: Record<string, string>,
+  onProgress?: (message: string, log: string) => void
 ): Promise<LockedPdfMergeResult> {
   if (!urls.length) {
     return { pdfData: null, pagesAdded: 0, failures: [] };
@@ -384,6 +385,8 @@ async function mergeLockedPdfsWithCloudRun(
   }
 
   try {
+    onProgress?.(`Connecting to decryption service...`, `🔐 Initiating secure connection`);
+    
     const response = await fetchWithRetry(
       serviceUrl,
       {
@@ -398,6 +401,8 @@ async function mergeLockedPdfsWithCloudRun(
         retryDelay: 1000,
       }
     );
+
+    onProgress?.(`Processing decryption response...`, `🔓 Decryption service responded`);
 
     const rawText = await response.text();
     let parsed: {
@@ -431,6 +436,8 @@ async function mergeLockedPdfsWithCloudRun(
           : [parsed.error || `Cloud Run decrypt service failed (${response.status})`],
       };
     }
+
+    onProgress?.(`Decryption completed successfully`, `✓ Decrypted ${parsed.pagesAdded || 0} pages`);
 
     return {
       pdfData: new Uint8Array(Buffer.from(parsed.pdfBase64, 'base64')),
@@ -622,7 +629,13 @@ export async function POST(request: NextRequest) {
                   'Calling external decrypt service'
                 );
 
-                const lockedResult = await mergeLockedPdfsWithCloudRun(urls, passwordMap);
+                const lockedResult = await mergeLockedPdfsWithCloudRun(urls, passwordMap, (message, log) => {
+                  updateProgressJob(
+                    requestId,
+                    { stage: 'decrypting', message },
+                    log
+                  );
+                });
                 pdfData = lockedResult.pdfData;
                 pagesAdded = lockedResult.pagesAdded;
                 generationFailures = lockedResult.failures;
@@ -647,10 +660,11 @@ export async function POST(request: NextRequest) {
                   );
                 }
               } else {
-                const generated = await generatePdfFromUrls(urls, (current, total, message) => {
+                const generated = await generatePdfFromUrls(urls, (current, total, message, log) => {
                   updateProgressJob(
                     requestId,
-                    { stage: 'downloading', message, current, total }
+                    { stage: 'downloading', message, current, total },
+                    log
                   );
                 });
                 pdfData = generated.pdfData;
@@ -658,6 +672,18 @@ export async function POST(request: NextRequest) {
               }
               
               if (pdfData) {
+                updateProgressJob(
+                  requestId,
+                  {
+                    status: 'running',
+                    stage: 'merging',
+                    message: 'Finalizing PDF document...',
+                    current: pagesAdded,
+                    total: pagesAdded,
+                  },
+                  'Converting to downloadable format'
+                );
+
                 updateProgressJob(
                   requestId,
                   {

@@ -257,37 +257,18 @@ export default function Home() {
               variant="primary"
               className="w-full"
               size="lg"
-              disabled={!canStartDownload}
-              loading={loading.download}
+              disabled={!canStartDownload || loading.download || downloadReady}
               onClick={startDownload}
             >
               <Download className="w-5 h-5" />
-              {loading.download ? 'Preparing Download...' : 'Download Newspaper'}
+              Download Newspaper
             </NeumorphicButton>
-
-            {/* Error Display */}
-            <AnimatePresence>
-              {error && !loading.download && !downloadReady && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className={cn(
-                    'mt-4 p-3 rounded-xl',
-                    'bg-[var(--state-error)]/10',
-                    'border border-[var(--state-error)]/20'
-                  )}
-                >
-                  <p className="text-sm text-[var(--state-error)]">{error}</p>
-                </motion.div>
-              )}
-            </AnimatePresence>
           </NeumorphicCard>
         </motion.div>
 
         {/* Download Progress Section */}
         <AnimatePresence>
-          {(loading.download || downloadReady || (error && progress)) && (
+          {(progress || downloadReady || error) && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -296,7 +277,7 @@ export default function Home() {
               <DownloadProgress
                 progress={progress}
                 downloadReady={downloadReady}
-                error={loading.download ? null : error}
+                error={error}
                 onDownload={triggerDownload}
                 onCancel={cancelDownload}
                 onRetry={startDownload}
@@ -309,7 +290,7 @@ export default function Home() {
 
         {/* Info Section - shown when date is selected but no download in progress */}
         <AnimatePresence>
-          {date && !loading.download && !downloadReady && (
+          {date && !loading.download && !downloadReady && !progress && !error && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}

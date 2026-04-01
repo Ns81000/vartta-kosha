@@ -265,15 +265,31 @@ export function useNewspaper() {
 
       const progress = data.progress as ProgressState;
       
-      // Always update progress state for real-time feedback
-      setState(prev => ({
-        ...prev,
-        progress: {
-          ...progress,
-          // Preserve logs array and merge new ones
-          logs: progress.logs || prev.progress?.logs || [],
-        },
-      }));
+      // Update progress state for real-time feedback
+      setState(prev => {
+        // Only update if there's actual changes to prevent unnecessary re-renders
+        const hasChanges = 
+          !prev.progress ||
+          prev.progress.status !== progress.status ||
+          prev.progress.stage !== progress.stage ||
+          prev.progress.message !== progress.message ||
+          prev.progress.current !== progress.current ||
+          prev.progress.total !== progress.total ||
+          (progress.logs && progress.logs.length !== prev.progress.logs?.length);
+
+        if (!hasChanges) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          progress: {
+            ...progress,
+            // Preserve and merge logs array
+            logs: progress.logs || prev.progress?.logs || [],
+          },
+        };
+      });
 
       // Only stop polling and set error if status is error
       // Don't stop on 'complete' - let the POST response handler do that
@@ -317,7 +333,7 @@ export function useNewspaper() {
     // Start polling immediately with faster interval for real-time updates
     pollIntervalRef.current = setInterval(() => {
       pollProgress(requestId);
-    }, 300);
+    }, 500); // Increased to 500ms for better balance between responsiveness and server load
 
     try {
       const dateStr = format(state.date, 'yyyyMMdd');
@@ -400,6 +416,8 @@ export function useNewspaper() {
       loading: { ...prev.loading, download: false },
       progress: null,
       error: null,
+      downloadUrl: null,
+      downloadReady: false,
     }));
   }, [stopPolling]);
 

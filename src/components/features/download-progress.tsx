@@ -84,7 +84,7 @@ export function DownloadProgress({
             <h3 className="font-semibold text-[var(--text-primary)] mb-1">
               Download Failed
             </h3>
-            <p className="text-[var(--text-secondary)] text-sm mb-4">
+            <p className="text-[var(--text-secondary)] text-sm mb-4 whitespace-pre-wrap">
               {error}
             </p>
             
